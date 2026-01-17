@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv" // YENİ: String çevirmek için
 	"sync"
 	"time"
 
@@ -20,19 +21,17 @@ var (
 	clientsMu sync.Mutex
 )
 
-// Modeller (API Yanıtı için)
+// Modeller
 type LogEntry struct {
-	ID        int    `json:"id"`
-	Target    string `json:"target"`
-	Status    int    `json:"status"`
-	Latency   string `json:"latency"`
-	Agent     string `json:"agent"`
-	CreatedAt string `json:"created_at"`
-
-	// Yeni Alanlar
-	CPU  float64 `json:"cpu"`
-	RAM  float64 `json:"ram"`
-	Disk float64 `json:"disk"`
+	ID        int     `json:"id"`
+	Target    string  `json:"target"`
+	Status    int     `json:"status"`
+	Latency   string  `json:"latency"`
+	Agent     string  `json:"agent"`
+	CreatedAt string  `json:"created_at"`
+	CPU       float64 `json:"cpu"`
+	RAM       float64 `json:"ram"`
+	Disk      float64 `json:"disk"`
 }
 type TargetTask struct {
 	ID        int    `json:"id"`
@@ -47,24 +46,14 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// Tabloyu yeni sütunlarla oluştur
 	query := `CREATE TABLE IF NOT EXISTS logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		target TEXT, 
-		status INTEGER, 
-		latency TEXT, 
-		agent TEXT, 
-		created_at DATETIME,
-		cpu REAL,
-		ram REAL,
-		disk REAL
+		target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME,
+		cpu REAL, ram REAL, disk REAL
 	);`
-	if _, err := db.Exec(query); err != nil {
-		log.Fatal("Log tablosu hatası:", err)
-	}
-
+	db.Exec(query)
 	db.Exec(`CREATE TABLE IF NOT EXISTS targets (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, target_url TEXT);`)
-	fmt.Println("💾 Veritabanı (System Stats) hazır.")
+	fmt.Println("💾 Veritabanı (Analytics Ready) hazır.")
 }
 
 func startTaskScheduler() {
@@ -131,15 +120,43 @@ func handleTargets(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- GÜNCELLENEN FONKSİYON: TARİH FİLTRESİ ---
 func getHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	// Yeni sütunları da çek
-	rows, _ := db.Query("SELECT id, target, status, latency, agent, created_at, cpu, ram, disk FROM logs ORDER BY id DESC LIMIT 50")
+
+	// URL parametresini kontrol et: ?hours=24 gibi
+	hoursStr := r.URL.Query().Get("hours")
+
+	var rows *sql.Rows
+	var err error
+
+	if hoursStr != "" {
+		// Eğer saat filtresi varsa: O saatten öncekileri getir
+		// Not: SQLite 'datetime' fonksiyonu ile zaman hesabı
+		// SQL Enjeksiyonuna karşı parametre kullanıyoruz (?) ancak interval string birleştirme SQLite'da trickli olabilir.
+		// Basitlik için Go tarafında zamanı hesaplayıp gönderelim.
+
+		hours, _ := strconv.Atoi(hoursStr)
+		cutoff := time.Now().Add(time.Duration(-hours) * time.Hour).Format("2006-01-02 15:04:05")
+
+		// Zaman kısıtlı sorgu
+		rows, err = db.Query(`SELECT id, target, status, latency, agent, created_at, cpu, ram, disk 
+							  FROM logs WHERE created_at >= ? ORDER BY id ASC`, cutoff)
+	} else {
+		// Varsayılan: Son 50 kayıt (Canlı izleme için)
+		rows, err = db.Query(`SELECT id, target, status, latency, agent, created_at, cpu, ram, disk 
+							  FROM logs ORDER BY id DESC LIMIT 50`)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	defer rows.Close()
+
 	var history []LogEntry
 	for rows.Next() {
 		var e LogEntry
-		// Scan sırasına dikkat
 		rows.Scan(&e.ID, &e.Target, &e.Status, &e.Latency, &e.Agent, &e.CreatedAt, &e.CPU, &e.RAM, &e.Disk)
 		history = append(history, e)
 	}
@@ -148,6 +165,8 @@ func getHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(history)
 }
+
+// ----------------------------------------------
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
@@ -177,7 +196,6 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("🔵 Ajan Kayıt: %s\n", currentAgentName)
 		}
 		if msg.Type == "RAPOR" {
-			// Yeni verileri kaydet
 			db.Exec("INSERT INTO logs (target, status, latency, agent, created_at, cpu, ram, disk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now().UTC(), msg.CPU, msg.RAM, msg.Disk)
 		}
