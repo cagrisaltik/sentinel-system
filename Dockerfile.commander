@@ -1,0 +1,24 @@
+# --- Aşama 1: İnşaat (Builder) ---
+FROM golang:alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod ./
+# RUN go mod download (Şimdilik kapalı)
+
+COPY . .
+
+# Commander'ı derle
+RUN go build -o commander ./cmd/commander/main.go
+
+# --- Aşama 2: Çalıştırma (Runner) ---
+FROM alpine:latest
+
+WORKDIR /root/
+
+COPY --from=builder /app/commander .
+
+# Sunucu 8080 portunu kullanıyor, dışarı açıyoruz
+EXPOSE 8080
+
+CMD ["./commander"]

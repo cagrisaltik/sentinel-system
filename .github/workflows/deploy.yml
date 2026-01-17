@@ -1,13 +1,12 @@
-name: Sentinel Docker CI
+name: Sentinel System CI
 
 on:
   push:
     branches: [ "main" ]
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
-
     steps:
     - name: Kodları Çek
       uses: actions/checkout@v4
@@ -18,11 +17,22 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    # BURASI ÖNEMLİ: Scout (Ajan) için Build alıyoruz
+    # --- 1. KOMUTANI (COMMANDER) YÜKLE ---
+    - name: Build & Push (Commander)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.commander
+        push: true
+        # DİKKAT: tags kısmını kendi kullanıcına göre düzenle
+        tags: cagrisaltik/sentinel-commander:latest
+
+    # --- 2. AJANI (SCOUT) YÜKLE ---
     - name: Build & Push (Scout)
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ./Dockerfile.scout
         push: true
+        # DİKKAT: tags kısmını kendi kullanıcına göre düzenle
         tags: cagrisaltik/sentinel-scout:latest
