@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"strings" // YENİ: Metin işleme kütüphanesi
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
@@ -42,7 +45,7 @@ func connectAndListen(url, agentName string) {
 
 	// 1. KAYIT OL
 	c.WriteJSON(models.Command{Type: "REGISTER", Agent: agentName})
-	fmt.Println("✅ Kayıt başarılı. Emir bekleniyor...")
+	fmt.Println("✅ Kayıt başarılı. Görev bekleniyor...")
 
 	// 2. EMİR DİNLE
 	for {
@@ -53,35 +56,90 @@ func connectAndListen(url, agentName string) {
 		}
 
 		if cmd.Type == "PING_ISTEGI" {
-			// --- YENİ EKLENEN KISIM: IP/URL DÜZELTME ---
-			target := cmd.Target
-			// Eğer başında http:// veya https:// yoksa, varsayılan olarak http:// ekle
-			if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-				target = "http://" + target
-			}
-			// ---------------------------------------------
-
+			target := strings.TrimSpace(cmd.Target)
 			fmt.Printf("⚡ Görev: %s\n", target)
 
-			start := time.Now()
-			// Artık düzeltilmiş 'target' değişkenini kullanıyoruz
-			resp, err := http.Get(target)
+			var status int
+			var duration time.Duration
+			var errCheck error
 
-			duration := time.Since(start)
-			status := 0
-			if err != nil {
-				fmt.Println("❌ Hata:", err) // Hatayı konsola bas ama durma
-				status = 500
+			// --- ZEKİ MOD SEÇİCİ ---
+			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+				// MOD 1: HTTP İSTEĞİ
+				status, duration, errCheck = checkHTTP(target)
+			} else if strings.Contains(target, ":") {
+				// MOD 2: PORT KONTROLÜ (Telnet benzeri)
+				// Örn: 1.1.1.1:53 veya google.com:443
+				status, duration, errCheck = checkPort(target)
 			} else {
-				status = resp.StatusCode
-				resp.Body.Close()
+				// MOD 3: PING (ICMP)
+				// Örn: 1.1.1.1 veya google.com
+				status, duration, errCheck = checkPing(target)
 			}
 
-			// Raporu gönder (Orijinal hedef adını koruyarak veya düzelterek gönderebilirsin)
+			// Hata varsa konsola bas
+			if errCheck != nil {
+				fmt.Println("❌ Hata:", errCheck)
+				// Ping başarısızsa status 0 veya 500 dönebiliriz
+				if status == 0 {
+					status = 500
+				}
+			}
+
+			// Raporu gönder
 			c.WriteJSON(models.Command{
-				Type: "RAPOR", Target: target, Status: status, // Raporlarken 'target' (http eklenmiş halini) yolluyoruz
+				Type: "RAPOR", Target: target, Status: status,
 				Time: fmt.Sprintf("%dms", duration.Milliseconds()), Agent: agentName,
 			})
 		}
 	}
+}
+
+// --- YARDIMCI FONKSİYONLAR ---
+
+// 1. HTTP KONTROLÜ (SSL Hatasını Yoksayar)
+func checkHTTP(target string) (int, time.Duration, error) {
+	// SSL Sertifika hatalarını (x509) yoksaymak için özel Transport
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+
+	start := time.Now()
+	resp, err := client.Get(target)
+	duration := time.Since(start)
+
+	if err != nil {
+		return 0, duration, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, duration, nil
+}
+
+// 2. PORT KONTROLÜ (TCP Connect)
+func checkPort(target string) (int, time.Duration, error) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", target, 3*time.Second)
+	duration := time.Since(start)
+
+	if err != nil {
+		return 500, duration, err // Bağlanamadı
+	}
+	defer conn.Close()
+	return 200, duration, nil // Bağlandı (200 OK mantığı)
+}
+
+// 3. PING KONTROLÜ (OS Ping Komutu)
+func checkPing(target string) (int, time.Duration, error) {
+	start := time.Now()
+	// Linux/Alpine ping komutu: -c 1 (1 paket), -W 1 (1 saniye bekle)
+	cmd := exec.Command("ping", "-c", "1", "-W", "1", target)
+
+	err := cmd.Run()
+	duration := time.Since(start)
+
+	if err != nil {
+		return 500, duration, err // Ping gitmedi
+	}
+	return 200, duration, nil // Ping gitti
 }
