@@ -10,7 +10,7 @@
     <style>
         :root {
             --bg-color: #09090b; --card-bg: rgba(24, 24, 27, 0.6); --border-color: rgba(255, 255, 255, 0.08);
-            --accent-color: #3b82f6; --success-color: #10b981; --danger-color: #ef4444;
+            --accent-color: #3b82f6; --success-color: #10b981; --danger-color: #ef4444; --warning-color: #f59e0b;
             --text-main: #e4e4e7; --text-muted: #a1a1aa;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -53,7 +53,7 @@
     <div class="dashboard-grid">
         <div class="card stat-card">
             <i class="fa-solid fa-server stat-icon"></i>
-            <span class="stat-title">Toplam Rapor</span>
+            <span class="stat-title">Toplam Rapor (Log)</span>
             <span class="stat-value" id="totalScans">0</span>
         </div>
         <div class="card stat-card">
@@ -64,11 +64,11 @@
         <div class="card stat-card">
             <i class="fa-solid fa-heart-pulse stat-icon"></i>
             <span class="stat-title">Sistem Sağlığı</span>
-            <span class="stat-value" style="color: var(--success-color);">%100</span>
+            <span class="stat-value" id="systemHealth" style="color: var(--success-color);">%100</span>
         </div>
         <div class="card stat-card">
             <i class="fa-solid fa-network-wired stat-icon"></i>
-            <span class="stat-title">Aktif Ajanlar</span>
+            <span class="stat-title">Canlı Ajanlar</span>
             <span class="stat-value" id="activeAgents">0</span>
         </div>
 
@@ -78,7 +78,7 @@
         </div>
 
         <div class="card table-container">
-            <h3 style="margin-bottom: 10px; font-weight: 500;">📋 Ajan Raporları</h3>
+            <h3 style="margin-bottom: 10px; font-weight: 500;">📋 Son Raporlar</h3>
             <div class="table-wrapper">
                 <table id="logTable">
                     <thead><tr><th>Ajan</th><th>Durum</th><th>Ping</th></tr></thead>
@@ -88,10 +88,8 @@
         </div>
     </div>
 
-   <script>
+    <script>
         const ctx = document.getElementById('mainChart').getContext('2d');
-        
-        // Mavi Gradient Arka Plan
         let gradient = ctx.createLinearGradient(0, 0, 0, 400);
         gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
         gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
@@ -107,38 +105,25 @@
                     backgroundColor: gradient,
                     borderWidth: 2,
                     pointBackgroundColor: '#fff',
-                    pointRadius: 3, // Noktaları biraz belirginleştir
+                    pointRadius: 3,
                     fill: true,
-                    tension: 0.3 // Çizgi yumuşaklığı
+                    tension: 0.3
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                animation: false, // <--- KRİTİK: Animasyonu kapattık (Oynamayı durdurur)
-                interaction: {
-                    mode: 'index',
-                    intersect: false,
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false
-                    }
-                },
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { display: false } },
                 scales: {
-                    x: { 
-                        grid: { color: 'rgba(255,255,255,0.05)' }, 
-                        ticks: { color: '#a1a1aa', maxTicksLimit: 10 } // Çok fazla saat yazısını engelle
-                    },
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a1a1aa', maxTicksLimit: 10 } },
                     y: { 
                         grid: { color: 'rgba(255,255,255,0.05)' }, 
                         ticks: { color: '#a1a1aa' }, 
                         beginAtZero: true,
-                        min: 0,    // Taban kesinlikle 0
-                        max: 2000  // <--- TAVAN: Burayı 2000 yaptık. (Senin ping 700lerde olduğu için)
-                                   // Eğer pingin düşerse burayı 1000 yapabilirsin.
+                        min: 0,
+                        max: 1000 // Tavanı ping durumuna göre ayarla
                     }
                 }
             }
@@ -149,61 +134,84 @@
                 const response = await fetch('/api/history');
                 const data = await response.json();
                 
-                if (!data) return;
+                if (!data || data.length === 0) return;
 
-                // --- 1. İstatistikleri Güncelle ---
-                document.getElementById('totalScans').innerText = data.length;
+                // --- 1. DİNAMİK CANLI AJAN HESABI ---
+                const now = new Date(); // Şu anki zaman
+                const activeAgentsSet = new Set();
                 
-                const uniqueAgents = new Set(data.map(d => d.agent));
-                document.getElementById('activeAgents').innerText = uniqueAgents.size;
+                // Son 45 saniye içinde rapor gönderenleri "Canlı" say
+                const timeThreshold = 45 * 1000; 
 
+                data.forEach(log => {
+                    // Go'dan gelen UTC zamanını parse et
+                    const logTime = new Date(log.created_at);
+                    // Eğer zaman farkı eşikten küçükse bu ajan canlıdır
+                    if ((now - logTime) < timeThreshold) {
+                        activeAgentsSet.add(log.agent);
+                    }
+                });
+                
+                const activeCount = activeAgentsSet.size;
+                const activeEl = document.getElementById('activeAgents');
+                activeEl.innerText = activeCount;
+                // Ajan sayısı 0 ise kırmızı, değilse normal
+                activeEl.style.color = activeCount === 0 ? 'var(--danger-color)' : 'var(--text-main)';
+
+
+                // --- 2. SİSTEM SAĞLIĞI HESABI ---
+                // Son 20 isteğe bak, kaçı 200 OK?
+                const recentLogs = data.slice(0, 20);
+                const successCount = recentLogs.filter(l => l.status === 200).length;
+                const healthPercentage = Math.round((successCount / recentLogs.length) * 100);
+                
+                const healthEl = document.getElementById('systemHealth');
+                healthEl.innerText = `%${healthPercentage}`;
+                
+                // Rengi değiştir
+                if(healthPercentage === 100) healthEl.style.color = 'var(--success-color)';
+                else if(healthPercentage > 50) healthEl.style.color = 'var(--warning-color)';
+                else healthEl.style.color = 'var(--danger-color)';
+
+                
+                // --- 3. İSTATİSTİKLER ---
+                document.getElementById('totalScans').innerText = data.length; // Toplam çekilen kayıt
+                
                 let totalLatency = 0;
                 data.forEach(d => totalLatency += parseInt(d.latency));
                 let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
                 document.getElementById('avgLatency').innerText = avg + "ms";
 
-                // --- 2. Tabloyu Güncelle ---
+                // --- 4. TABLO (LİMİT 10) ---
                 const tableBody = document.querySelector("#logTable tbody");
                 tableBody.innerHTML = "";
                 
-                // Sadece son 20 veriyi tabloya bas
-                data.slice(0, 20).forEach(log => {
+                data.slice(0, 10).forEach(log => {
                     const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                     const icon = log.status === 200 ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-xmark"></i>';
                     
                     const row = `
                         <tr>
-                            <td><span class="agent-tag">${log.agent || 'Bilinmeyen'}</span></td>
+                            <td><span class="agent-tag">${log.agent || 'Ghost'}</span></td>
                             <td class="${statusClass}">${icon} ${log.status}</td>
                             <td>${log.latency}</td>
                         </tr>`;
                     tableBody.innerHTML += row;
                 });
 
-                // --- 3. Grafiği Güncelle ---
-                // Veriyi ters çevir (Eskiden yeniye)
+                // --- 5. GRAFİK ---
                 const reversedData = [...data].reverse();
-                
-                // Son 30 veriyi grafikte göster (Çok sıkışmasın)
                 const chartData = reversedData.slice(-30);
-
                 chart.data.labels = chartData.map(d => {
-                    const date = new Date(d.created_at);
-                    return date.toLocaleTimeString('tr-TR', {minute:'2-digit', second:'2-digit'});
+                    return new Date(d.created_at).toLocaleTimeString('tr-TR', {minute:'2-digit', second:'2-digit'});
                 });
                 chart.data.datasets[0].data = chartData.map(d => parseInt(d.latency));
-                
-                chart.update(); // Animasyon kapalı olduğu için anında çizilecek
+                chart.update();
 
-            } catch (err) {
-                console.error("Veri çekilemedi:", err);
-            }
+            } catch (err) { console.error("Veri hatası:", err); }
         }
 
-        // İlk açılışta çalıştır
         updateDashboard();
-        
-        // 2 saniyede bir güncelle
         setInterval(updateDashboard, 2000);
     </script>
 </body>

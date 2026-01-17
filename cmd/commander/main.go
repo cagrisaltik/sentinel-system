@@ -15,13 +15,12 @@ import (
 
 var db *sql.DB
 
-// API Response Yapısı
 type LogEntry struct {
 	ID        int    `json:"id"`
 	Target    string `json:"target"`
 	Status    int    `json:"status"`
 	Latency   string `json:"latency"`
-	Agent     string `json:"agent"` // YENİ ALAN
+	Agent     string `json:"agent"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -32,26 +31,21 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// Tabloya 'agent' sütunu eklendi
 	query := `CREATE TABLE IF NOT EXISTS logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		target TEXT,
-		status INTEGER,
-		latency TEXT,
-		agent TEXT, 
-		created_at DATETIME
+		target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME
 	);`
 	if _, err := db.Exec(query); err != nil {
 		log.Fatal("Tablo hatası:", err)
 	}
-	fmt.Println("💾 Veritabanı hazır (Agent destekli).")
+	fmt.Println("💾 Veritabanı hazır.")
 }
 
 func getHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Agent bilgisini de çekiyoruz
-	rows, err := db.Query("SELECT id, target, status, latency, agent, created_at FROM logs ORDER BY id DESC LIMIT 50")
+	// Analiz için son 100 kaydı çekiyoruz (Frontend süzecek)
+	rows, err := db.Query("SELECT id, target, status, latency, agent, created_at FROM logs ORDER BY id DESC LIMIT 100")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,7 +58,6 @@ func getHistory(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&e.ID, &e.Target, &e.Status, &e.Latency, &e.Agent, &e.CreatedAt)
 		history = append(history, e)
 	}
-	// Boşsa null yerine boş array dön
 	if history == nil {
 		history = []LogEntry{}
 	}
@@ -80,15 +73,14 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	// Görev Döngüsü
+	// Düzenli Görev Emri
 	go func() {
 		for {
-			time.Sleep(10 * time.Second)
+			time.Sleep(5 * time.Second) // 5 saniyede bir ping attır
 			ws.WriteJSON(models.Command{Type: "PING_ISTEGI", Target: "https://www.google.com"})
 		}
 	}()
 
-	// Dinleme Döngüsü
 	for {
 		var rapor models.Command
 		if err := ws.ReadJSON(&rapor); err != nil {
@@ -96,12 +88,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if rapor.Type == "RAPOR" {
-			fmt.Printf("📊 [%s] RAPOR -> %s | %s\n", rapor.Agent, rapor.Target, rapor.Time)
-
-			// Agent ismini de kaydediyoruz
+			// UTC zaman damgası kullanıyoruz ki JS tarafında saat farkı olmasın
 			_, err := db.Exec("INSERT INTO logs (target, status, latency, agent, created_at) VALUES (?, ?, ?, ?, ?)",
-				rapor.Target, rapor.Status, rapor.Time, rapor.Agent, time.Now())
-
+				rapor.Target, rapor.Status, rapor.Time, rapor.Agent, time.Now().UTC())
 			if err != nil {
 				fmt.Println("❌ DB Hatası:", err)
 			}
@@ -115,6 +104,6 @@ func main() {
 	http.HandleFunc("/api/history", getHistory)
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 
-	fmt.Println("🚀 Commander v2.0 Aktif (Port 8080)...")
+	fmt.Println("🚀 Commander Final Surum (Port 8080)...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
