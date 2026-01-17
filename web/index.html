@@ -20,42 +20,31 @@
         .brand { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; gap: 10px; display: flex; align-items: center; }
         .brand i { color: var(--accent-color); }
 
-        /* Grid Layout */
         .dashboard-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
         .card { background: var(--card-bg); backdrop-filter: blur(12px); border: 1px solid var(--border-color); border-radius: 16px; padding: 1.5rem; display: flex; flex-direction: column; }
-        
-        /* İstatistik Kartları */
         .stat-card { gap: 10px; }
         .stat-value { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
         .stat-title { color: var(--text-muted); font-size: 0.9rem; }
 
-        /* --- CHART FIX (ÖNEMLİ) --- */
         .chart-container { grid-column: span 3; grid-row: span 2; min-height: 400px; position: relative; }
-        .chart-wrapper { 
-            position: relative; 
-            height: 100%; 
-            width: 100%; 
-            flex-grow: 1; /* Kartın geri kalanını kapla */
-        }
-
+        .chart-wrapper { position: relative; height: 100%; width: 100%; flex-grow: 1; }
         .table-container { grid-column: span 1; grid-row: span 2; overflow: hidden; }
         .table-wrapper { overflow-y: auto; margin-top: 10px; height: 100%; }
 
-        /* GÖREV YÖNETİCİSİ */
         .task-manager { grid-column: span 4; display: flex; flex-direction: row; gap: 20px; align-items: flex-start; }
         .task-form { flex: 1; display: flex; gap: 10px; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 12px; width: 100%; }
         .task-list { flex: 2; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
         
-        input { background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); color: white; padding: 12px; border-radius: 6px; flex: 1; font-family: 'JetBrains Mono'; outline: none; }
-        input:focus { border-color: var(--accent-color); }
+        /* INPUT ve SELECT STİLLERİ */
+        input, select { background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); color: white; padding: 12px; border-radius: 6px; flex: 1; font-family: 'JetBrains Mono'; outline: none; }
+        input:focus, select:focus { border-color: var(--accent-color); }
+        select option { background-color: #161b22; color: white; } /* Dropdown içi siyah olsun */
+
         button { background: var(--accent-color); color: white; border: none; padding: 0 25px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; }
         button:hover { opacity: 0.9; }
-
         .task-item { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); padding: 8px 16px; border-radius: 20px; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; }
         .task-item i { color: var(--danger-color); cursor: pointer; opacity: 0.7; }
-        .task-item i:hover { opacity: 1; }
-
-        /* Tablo */
+        
         table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
         th { text-align: left; color: var(--text-muted); padding: 10px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: #161b22; z-index: 10; }
         td { padding: 10px; border-bottom: 1px solid var(--border-color); font-family: 'JetBrains Mono'; }
@@ -67,7 +56,7 @@
 <body>
     <header>
         <div class="brand"><i class="fa-solid fa-shield-halved"></i> SENTINEL <span style="font-weight: 300; opacity: 0.6;">C2</span></div>
-        <div style="font-size: 0.9rem; color: var(--text-muted);">v3.0 Dynamic Core</div>
+        <div style="font-size: 0.9rem; color: var(--text-muted);">v3.1 Dynamic Agents</div>
     </header>
 
     <div class="dashboard-grid">
@@ -78,19 +67,18 @@
 
         <div class="card task-manager">
             <div class="task-form">
-                <input type="text" id="targetAgent" placeholder="Ajan İsmi (Örn: Izmir-Merkez)">
-                <input type="text" id="targetUrl" placeholder="Hedef URL (Örn: https://google.com)">
+                <select id="targetAgent">
+                    <option value="">Ajan Yükleniyor...</option>
+                </select>
+                <input type="text" id="targetUrl" placeholder="Hedef URL (Örn: google.com)">
                 <button onclick="addTask()">+ Ekle</button>
             </div>
-            <div class="task-list" id="taskList">
-                </div>
+            <div class="task-list" id="taskList"></div>
         </div>
 
         <div class="card chart-container">
             <h3 style="margin-bottom: 15px;">🚀 Canlı Gecikme Analizi</h3>
-            <div class="chart-wrapper">
-                <canvas id="mainChart"></canvas>
-            </div>
+            <div class="chart-wrapper"><canvas id="mainChart"></canvas></div>
         </div>
 
         <div class="card table-container">
@@ -105,7 +93,45 @@
     </div>
 
     <script>
-        // --- 1. GÖREV YÖNETİMİ ---
+        // --- YENİ FONKSİYON: BAĞLI AJANLARI ÇEK ---
+        async function fetchActiveAgents() {
+            try {
+                const res = await fetch('/api/agents');
+                const agents = await res.json();
+                
+                const select = document.getElementById('targetAgent');
+                const currentSelection = select.value; // Seçili olanı korumaya çalış
+
+                // Listeyi temizle
+                select.innerHTML = '';
+
+                if (agents.length === 0) {
+                    select.innerHTML = '<option value="">⚠️ Aktif Ajan Yok</option>';
+                    return;
+                }
+
+                // Listeyi doldur
+                agents.forEach(agent => {
+                    const option = document.createElement('option');
+                    option.value = agent;
+                    option.innerText = `🔵 ${agent}`;
+                    select.appendChild(option);
+                });
+
+                // Eğer eski seçim hala listedeyse onu seçili yap
+                if (agents.includes(currentSelection)) {
+                    select.value = currentSelection;
+                }
+            } catch (e) {
+                console.error("Ajan listesi alınamadı", e);
+            }
+        }
+        
+        // 3 saniyede bir ajan listesini güncelle
+        setInterval(fetchActiveAgents, 3000);
+        fetchActiveAgents(); // Açılışta hemen çek
+        // ------------------------------------------
+
         async function loadTasks() {
             try {
                 const res = await fetch('/api/targets');
@@ -121,13 +147,13 @@
                             <i class="fa-solid fa-trash" onclick="deleteTask(${t.id})"></i>
                         </div>`;
                 });
-            } catch(e) { console.error("Görevler yüklenemedi", e); }
+            } catch(e) {}
         }
 
         async function addTask() {
-            const agent = document.getElementById('targetAgent').value.trim();
+            const agent = document.getElementById('targetAgent').value; // Artık select'ten alıyoruz
             const url = document.getElementById('targetUrl').value.trim();
-            if(!agent || !url) return alert("Lütfen Ajan İsmi ve URL giriniz!");
+            if(!agent || !url) return alert("Lütfen Ajan ve URL seçiniz!");
             
             await fetch('/api/targets', {
                 method: 'POST',
@@ -138,14 +164,13 @@
         }
 
         async function deleteTask(id) {
-            if(confirm('Bu görevi durdurmak istiyor musun?')) {
+            if(confirm('Görevi silmek istiyor musun?')) {
                 await fetch(`/api/targets?id=${id}`, { method: 'DELETE' });
                 loadTasks();
             }
         }
         loadTasks();
 
-        // --- 2. GRAFİK AYARLARI (RESPONSIVE FIX) ---
         const ctx = document.getElementById('mainChart').getContext('2d');
         let gradient = ctx.createLinearGradient(0, 0, 0, 400);
         gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
@@ -155,25 +180,18 @@
             type: 'line',
             data: { labels: [], datasets: [{ label: 'Gecikme', data: [], borderColor: '#3b82f6', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 2 }] },
             options: {
-                responsive: true, // TEKRAR TRUE YAPTIK (Kutuya uyması için)
-                maintainAspectRatio: false, // EN ÖNEMLİ AYAR BU (Yüksekliği serbest bırakır)
-                animation: false,
+                responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false } },
-                scales: { 
-                    x: { ticks: { display: false }, grid: { display: false } }, // X eksenini sadeleştirdik
-                    y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } 
-                }
+                scales: { x: { display: false }, y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } }
             }
         });
 
-        // --- 3. VERİ GÜNCELLEME ---
         async function updateDashboard() {
             try {
                 const response = await fetch('/api/history');
                 const data = await response.json();
                 if (!data) return;
 
-                // İstatistikler
                 const now = new Date();
                 const activeAgentsSet = new Set();
                 data.forEach(log => { if ((now - new Date(log.created_at)) < 45000) activeAgentsSet.add(log.agent); });
@@ -186,7 +204,6 @@
                 let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
                 document.getElementById('avgLatency').innerText = avg + "ms";
 
-                // Tablo (Son 10)
                 const tableBody = document.querySelector("#logTable tbody");
                 tableBody.innerHTML = "";
                 data.slice(0, 10).forEach(log => {
@@ -199,12 +216,11 @@
                     </tr>`;
                 });
 
-                // Grafik
-                const reversed = [...data].reverse().slice(-50); // Son 50 veriyi göster
+                const reversed = [...data].reverse().slice(-50);
                 chart.data.labels = reversed.map(d => new Date(d.created_at).toLocaleTimeString());
                 chart.data.datasets[0].data = reversed.map(d => parseInt(d.latency));
                 chart.update();
-            } catch (e) { console.log("Veri bekleniyor..."); }
+            } catch (e) {}
         }
         setInterval(updateDashboard, 2000);
         updateDashboard();

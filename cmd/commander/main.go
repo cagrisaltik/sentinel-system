@@ -15,14 +15,12 @@ import (
 )
 
 var db *sql.DB
-
-// --- BAĞLI AJANLARI YÖNETMEK İÇİN ---
 var (
-	clients   = make(map[string]*websocket.Conn) // AjanIsmi -> Websocket
-	clientsMu sync.Mutex                         // Haritayı korumak için kilit
+	clients   = make(map[string]*websocket.Conn)
+	clientsMu sync.Mutex
 )
 
-// --- VERİ MODELLERİ ---
+// Modeller
 type LogEntry struct {
 	ID        int    `json:"id"`
 	Target    string `json:"target"`
@@ -31,7 +29,6 @@ type LogEntry struct {
 	Agent     string `json:"agent"`
 	CreatedAt string `json:"created_at"`
 }
-
 type TargetTask struct {
 	ID        int    `json:"id"`
 	AgentName string `json:"agent_name"`
@@ -45,38 +42,20 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// Log tablosu
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME
-	);`)
-
-	// YENİ: Hedefler Tablosu (Görev Listesi)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS targets (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		agent_name TEXT,
-		target_url TEXT
-	);`)
-
-	if err != nil {
-		log.Fatal("Tablo hatası:", err)
-	}
+	db.Exec(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME);`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS targets (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, target_url TEXT);`)
 	fmt.Println("💾 Veritabanı ve Görev Sistemi hazır.")
 }
 
-// --- GÖREV DAĞITICI (SCHEDULER) ---
 func startTaskScheduler() {
-	ticker := time.NewTicker(5 * time.Second) // 5 saniyede bir görevleri dağıt
+	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for range ticker.C {
-			// 1. Veritabanından tüm görevleri çek
 			rows, err := db.Query("SELECT agent_name, target_url FROM targets")
 			if err != nil {
-				fmt.Println("Görev okuma hatası:", err)
 				continue
 			}
 
-			// 2. Her görevi ilgili ajana yolla
 			for rows.Next() {
 				var agentName, targetUrl string
 				rows.Scan(&agentName, &targetUrl)
@@ -86,15 +65,7 @@ func startTaskScheduler() {
 				clientsMu.Unlock()
 
 				if exists {
-					// Ajan bağlıysa emri gönder
-					cmd := models.Command{
-						Type:   "PING_ISTEGI",
-						Target: targetUrl,
-					}
-					if err := conn.WriteJSON(cmd); err != nil {
-						fmt.Printf("⚠️ %s ajanına emir gidemedi.\n", agentName)
-						// Bağlantı kopmuş olabilir, listeden silmek handleConnections'ın işi
-					}
+					conn.WriteJSON(models.Command{Type: "PING_ISTEGI", Target: targetUrl})
 				}
 			}
 			rows.Close()
@@ -102,10 +73,30 @@ func startTaskScheduler() {
 	}()
 }
 
-// --- API: YENİ GÖREV EKLEME / SİLME ---
-func handleTargets(w http.ResponseWriter, r *http.Request) {
+// --- YENİ EKLENEN FONKSİYON: AKTİF AJANLARI LİSTELE ---
+func handleActiveAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+
+	var activeList []string
+	for name := range clients {
+		activeList = append(activeList, name)
+	}
+
+	// Eğer hiç ajan yoksa boş liste dön
+	if activeList == nil {
+		activeList = []string{}
+	}
+
+	json.NewEncoder(w).Encode(activeList)
+}
+
+// -------------------------------------------------------
+
+func handleTargets(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method == "GET" {
 		rows, _ := db.Query("SELECT id, agent_name, target_url FROM targets")
 		defer rows.Close()
@@ -119,13 +110,11 @@ func handleTargets(w http.ResponseWriter, r *http.Request) {
 			tasks = []TargetTask{}
 		}
 		json.NewEncoder(w).Encode(tasks)
-
 	} else if r.Method == "POST" {
 		var t TargetTask
 		json.NewDecoder(r.Body).Decode(&t)
 		db.Exec("INSERT INTO targets (agent_name, target_url) VALUES (?, ?)", t.AgentName, t.TargetURL)
 		w.WriteHeader(http.StatusCreated)
-
 	} else if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		db.Exec("DELETE FROM targets WHERE id = ?", id)
@@ -159,50 +148,41 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	var currentAgentName string
-
 	for {
 		var msg models.Command
 		err := ws.ReadJSON(&msg)
 		if err != nil {
-			// Bağlantı koptuysa listeden sil
 			if currentAgentName != "" {
 				clientsMu.Lock()
 				delete(clients, currentAgentName)
 				clientsMu.Unlock()
-				fmt.Printf("🔴 %s bağlantısı koptu.\n", currentAgentName)
 			}
 			break
 		}
-
-		// --- 1. KAYIT İŞLEMİ ---
 		if msg.Type == "REGISTER" {
 			currentAgentName = msg.Agent
 			clientsMu.Lock()
 			clients[currentAgentName] = ws
 			clientsMu.Unlock()
-			fmt.Printf("🔵 Ajan Kaydedildi: %s\n", currentAgentName)
+			fmt.Printf("🔵 Ajan Kayıt: %s\n", currentAgentName)
 		}
-
-		// --- 2. RAPOR İŞLEMİ ---
 		if msg.Type == "RAPOR" {
-			_, err := db.Exec("INSERT INTO logs (target, status, latency, agent, created_at) VALUES (?, ?, ?, ?, ?)",
+			db.Exec("INSERT INTO logs (target, status, latency, agent, created_at) VALUES (?, ?, ?, ?, ?)",
 				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now().UTC())
-			if err != nil {
-				fmt.Println("DB Error:", err)
-			}
 		}
 	}
 }
 
 func main() {
 	initDB()
-	startTaskScheduler() // Görev dağıtıcıyı başlat
+	startTaskScheduler()
 
 	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/api/history", getHistory)
-	http.HandleFunc("/api/targets", handleTargets) // Yeni Endpoint
-	http.Handle("/", http.FileServer(http.Dir("./web")))
+	http.HandleFunc("/api/targets", handleTargets)
+	http.HandleFunc("/api/agents", handleActiveAgents) // YENİ ROTA
 
-	fmt.Println("🚀 Commander v3.0 (Dynamic Targets) Aktif...")
+	http.Handle("/", http.FileServer(http.Dir("./web")))
+	fmt.Println("🚀 Commander v3.1 (Agent List) Aktif...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
