@@ -109,36 +109,45 @@
         </div>
     </div>
 
-    <script>
+   <script>
         // --- AYARLAR VE DEĞİŞKENLER ---
-        let currentMode = 'live'; // 'live', '1', '6', '24'
+        let currentMode = 'live'; 
         let liveInterval = null;
 
         // --- BUTON İŞLEMLERİ ---
         function setMode(mode) {
             currentMode = mode;
-            // Butonların aktiflik sınıfını güncelle
             document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
 
             if (mode === 'live') {
-                updateDashboard(); // Hemen bir kere çek
-                if (!liveInterval) liveInterval = setInterval(updateDashboard, 2000); // Döngüyü başlat
+                updateDashboard();
+                if (!liveInterval) liveInterval = setInterval(updateDashboard, 2000);
             } else {
-                if (liveInterval) { clearInterval(liveInterval); liveInterval = null; } // Döngüyü durdur
-                fetchHistory(mode); // Geçmiş veriyi çek
+                if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+                fetchHistory(mode);
             }
         }
 
         // --- GRAFİK KURULUMLARI ---
         const ctx = document.getElementById('mainChart').getContext('2d');
         let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)'); gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)'); 
+        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
         
         const mainChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: [], datasets: [{ label: 'Gecikme', data: [], borderColor: '#3b82f6', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 2 }] },
-            options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } } }
+            data: { labels: [], datasets: [{ label: 'Gecikme (ms)', data: [], borderColor: '#3b82f6', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 2 }] },
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false, 
+                animation: true, 
+                plugins: { legend: { display: false } }, 
+                scales: { 
+                    x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { display: false } }, 
+                    y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } 
+                } 
+            }
         });
 
         const pieCtx = document.getElementById('pieChart').getContext('2d');
@@ -151,37 +160,52 @@
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, cutout: '70%' }
         });
 
-        // --- VERİ İŞLEME VE GÜNCELLEME ---
+        // --- VERİ ÇEKME ---
         async function fetchHistory(hours) {
             try {
-                // API'ye saat parametresiyle istek at
                 const res = await fetch(`/api/history?hours=${hours}`);
                 const data = await res.json();
-                renderData(data, false); // false = Geçmiş modu (Veriyi ters çevirme)
+                renderData(data);
             } catch (e) { console.error(e); }
         }
 
         async function updateDashboard() {
             try {
-                const res = await fetch('/api/history'); // Parametresiz = Son 50 (Live)
+                const res = await fetch('/api/history');
                 const data = await res.json();
-                renderData(data, true); // true = Canlı mod (Son veriler)
+                renderData(data);
             } catch (e) {}
         }
 
-        function renderData(data, isLive) {
-            if (!data || data.length === 0) return;
+        // --- ANA RENDER FONKSİYONU ---
+        function renderData(data) {
+            if (!data || data.length === 0) {
+                // Veri yoksa grafikleri sıfırla
+                mainChart.data.labels = [];
+                mainChart.data.datasets[0].data = [];
+                mainChart.update();
+                return;
+            }
 
-            // 1. İstatistikler
+            // 1. İstatistik Hesaplama
             document.getElementById('totalScans').innerText = data.length;
             let totalLatency = 0;
             let successCount = 0;
             
+            // Canlı Ajan Hesabı (Son 45 saniye)
+            const now = new Date();
+            const activeSet = new Set();
+
             data.forEach(d => {
                 totalLatency += parseInt(d.latency);
                 if(d.status === 200) successCount++;
+                
+                // UTC zaman farkını düzeltmek için
+                const logTime = new Date(d.created_at);
+                if ((now - logTime) < 45000) activeSet.add(d.agent);
             });
 
+            // İstatistikleri Ekrana Bas
             const avg = data.length ? Math.round(totalLatency / data.length) : 0;
             document.getElementById('avgLatency').innerText = avg + "ms";
 
@@ -190,40 +214,27 @@
             healthEl.innerText = `%${successRate}`;
             healthEl.style.color = successRate === 100 ? '#10b981' : (successRate > 50 ? '#f59e0b' : '#ef4444');
 
-            // Aktif Ajanlar (Sadece Canlı Modda anlamlı, ama yine de hesaplayalım)
-            if (isLive) {
-                const now = new Date();
-                const activeSet = new Set();
-                data.forEach(log => { if ((now - new Date(log.created_at)) < 45000) activeSet.add(log.agent); });
+            if (currentMode === 'live') {
                 document.getElementById('activeAgents').innerText = activeSet.size;
             }
 
-            // 2. Pasta Grafik Güncelle
+            // 2. Pasta Grafik
             pieChart.data.datasets[0].data = [successCount, data.length - successCount];
             pieChart.update();
 
-            // 3. Tablo (En yeni 20 kayıt)
-            // Eğer geçmiş moddaysak, veriler eskiden yeniye geliyor (ASC), onları ters çevirip en yenileri gösterelim.
-            // Canlı modda zaten DESC geliyor ama biz slice ile alıyoruz.
-            // Standartlaştırma: Elimizdeki data array'ini en yeni en üstte olacak şekilde sıralayalım.
-            
-            let sortedData = [...data];
-            // Eğer veri tabanından ASC (eskiden yeniye) geldiyse (History modu), ters çevir
-            if (!isLive) sortedData.reverse(); 
-
+            // 3. Tablo (Veriler API'den ID DESC yani Yeniden Eskiye geliyor)
+            // Tabloda en yeniler üstte kalsın, dokunmuyoruz.
             const tableBody = document.querySelector("#logTable tbody");
             tableBody.innerHTML = "";
-            sortedData.slice(0, 20).forEach(log => {
+            data.slice(0, 10).forEach(log => {
                 const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                 let cpuClass = log.cpu > 80 ? 'sys-crit' : (log.cpu > 50 ? 'sys-warn' : '');
                 let ramClass = log.ram > 80 ? 'sys-crit' : (log.ram > 60 ? 'sys-warn' : '');
-                const cpuVal = Math.round(log.cpu || 0);
-                const ramVal = Math.round(log.ram || 0);
-
+                
                 tableBody.innerHTML += `<tr>
                     <td>
                         <div style="font-weight:bold; color:#60a5fa; margin-bottom:4px;">${log.agent}</div>
-                        <div><span class="sys-badge ${cpuClass}">CPU %${cpuVal}</span><span class="sys-badge ${ramClass}">RAM %${ramVal}</span></div>
+                        <div><span class="sys-badge ${cpuClass}">CPU %${Math.round(log.cpu||0)}</span><span class="sys-badge ${ramClass}">RAM %${Math.round(log.ram||0)}</span></div>
                     </td>
                     <td style="color:#a1a1aa; font-size:0.8rem;">${log.target}</td>
                     <td class="${statusClass}">${log.status}</td>
@@ -231,28 +242,32 @@
                 </tr>`;
             });
 
-            // 4. Çizgi Grafik
-            // Grafikte zaman ekseni soldan sağa (eskiden yeniye) gitmeli.
-            // sortedData (Yeniden eskiye) -> Reverse -> Eskiden Yeniye
-            const chartData = [...sortedData].reverse(); 
-            // Eğer çok fazla veri varsa grafiği boğmamak için örnekleme yapabiliriz ama şimdilik hepsini basalım.
+            // 4. Çizgi Grafik (DÜZELTME BURADA)
+            // Grafik zaman çizelgesidir. Solda ESKİ, Sağda YENİ olmalı.
+            // API bize [Yeni, Orta, Eski] veriyor.
+            // Biz bunu [Eski, Orta, Yeni] yapmalıyız -> .reverse()
             
-            mainChart.data.labels = chartData.map(d => {
+            // Orijinal diziyi bozmamak için kopyasını alıp ters çeviriyoruz
+            const chartData = [...data].reverse(); 
+            
+            // Eğer veri çok fazlaysa grafiği boğmamak için son 50 tanesini alalım (History modunda hepsi, Live modda son 50)
+            const dataToShow = currentMode === 'live' ? chartData.slice(-50) : chartData;
+
+            mainChart.data.labels = dataToShow.map(d => {
                 const date = new Date(d.created_at);
-                return date.getHours() + ':' + date.getMinutes().toString().padStart(2, '0');
+                // Saat:Dakika formatı
+                return date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
             });
-            mainChart.data.datasets[0].data = chartData.map(d => parseInt(d.latency));
+            mainChart.data.datasets[0].data = dataToShow.map(d => parseInt(d.latency));
             mainChart.update();
         }
 
-        // --- DİĞER FONKSİYONLAR (Task Manager & Agents) ---
+        // --- TASK & AGENT FONKSİYONLARI ---
         async function fetchActiveAgents() {
             try {
                 const res = await fetch('/api/agents');
                 const agents = await res.json();
                 const select = document.getElementById('targetAgent');
-                // Basitlik için her seferinde yeniden oluşturuyoruz ama seçimi korumuyoruz (Canlı modda sorun olmasın)
-                // Daha iyi UX için seçim korunabilir ama şimdilik yeterli.
                 if (agents.length === 0) { select.innerHTML = '<option value="">⚠️ Aktif Ajan Yok</option>'; return; }
                 const current = select.value;
                 select.innerHTML = '';
@@ -287,7 +302,7 @@
         async function deleteTask(id) { if(confirm('Sil?')) { await fetch(`/api/targets?id=${id}`, { method: 'DELETE' }); loadTasks(); } }
         loadTasks();
 
-        // Başlangıç: Canlı Mod
+        // Başlangıç Modu
         setMode('live');
 
     </script>
