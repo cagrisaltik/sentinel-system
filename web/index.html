@@ -190,37 +190,79 @@
             try {
                 const response = await fetch('/api/history');
                 const data = await response.json();
-                if (!data) return;
+                
+                // Veri yoksa veya boşsa her şeyi sıfırla
+                if (!data || data.length === 0) {
+                    document.getElementById('activeAgents').innerText = "0";
+                    document.getElementById('systemHealth').innerText = "%0";
+                    document.getElementById('systemHealth').style.color = 'var(--text-muted)';
+                    return;
+                }
 
                 const now = new Date();
                 const activeAgentsSet = new Set();
-                data.forEach(log => { if ((now - new Date(log.created_at)) < 45000) activeAgentsSet.add(log.agent); });
                 
-                document.getElementById('activeAgents').innerText = activeAgentsSet.size;
+                // Son 45 saniyede sinyal verenleri say
+                data.forEach(log => { 
+                    if ((now - new Date(log.created_at)) < 45000) {
+                        activeAgentsSet.add(log.agent);
+                    }
+                });
+                
+                const activeCount = activeAgentsSet.size;
+                document.getElementById('activeAgents').innerText = activeCount;
                 document.getElementById('totalScans').innerText = data.length;
                 
-                let totalLatency = 0;
-                data.forEach(d => totalLatency += parseInt(d.latency));
-                let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
-                document.getElementById('avgLatency').innerText = avg + "ms";
+                // --- KRİTİK DÜZELTME: AJAN YOKSA SAĞLIK SIFIRDIR ---
+                const healthEl = document.getElementById('systemHealth');
+                
+                if (activeCount === 0) {
+                    healthEl.innerText = "%0 (Offline)";
+                    healthEl.style.color = 'var(--text-muted)'; // Gri renk yap
+                } else {
+                    // Ajan varsa başarı oranını hesapla
+                    let totalLatency = 0;
+                    data.forEach(d => totalLatency += parseInt(d.latency));
+                    let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
+                    document.getElementById('avgLatency').innerText = avg + "ms";
 
+                    // Son 20 kaydın başarı oranı
+                    const recentLogs = data.slice(0, 20);
+                    const successCount = recentLogs.filter(l => l.status === 200).length;
+                    const healthPercentage = Math.round((successCount / recentLogs.length) * 100);
+                    
+                    healthEl.innerText = `%${healthPercentage}`;
+                    
+                    if(healthPercentage === 100) healthEl.style.color = 'var(--success-color)';
+                    else if(healthPercentage > 50) healthEl.style.color = 'var(--warning-color)';
+                    else healthEl.style.color = 'var(--danger-color)';
+                }
+                // -----------------------------------------------------
+
+                // Tabloyu Güncelle (Son 10)
                 const tableBody = document.querySelector("#logTable tbody");
                 tableBody.innerHTML = "";
                 data.slice(0, 10).forEach(log => {
                     const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
+                    const agentLabel = log.agent ? log.agent : 'Bilinmeyen';
+                    
                     tableBody.innerHTML += `<tr>
-                        <td><span style="color:#60a5fa; background:#1e3a8a; padding:2px 6px; border-radius:4px; font-size:0.75rem;">${log.agent}</span></td>
+                        <td><span style="color:#60a5fa; background:#1e3a8a; padding:2px 6px; border-radius:4px; font-size:0.75rem;">${agentLabel}</span></td>
                         <td style="color:#a1a1aa; font-size:0.8rem;">${log.target}</td>
                         <td class="${statusClass}">${log.status}</td>
                         <td>${log.latency}</td>
                     </tr>`;
                 });
 
+                // Grafiği Güncelle
                 const reversed = [...data].reverse().slice(-50);
                 chart.data.labels = reversed.map(d => new Date(d.created_at).toLocaleTimeString());
                 chart.data.datasets[0].data = reversed.map(d => parseInt(d.latency));
                 chart.update();
-            } catch (e) {}
+
+            } catch (e) { 
+                console.log("Veri bekleniyor..."); 
+            }
         }
         setInterval(updateDashboard, 2000);
         updateDashboard();
