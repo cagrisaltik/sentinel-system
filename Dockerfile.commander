@@ -16,9 +16,13 @@ FROM alpine:latest
 
 WORKDIR /root/
 
+# 1. Uygulamanın kendisini al
 COPY --from=builder /app/commander .
 
-# Sunucu 8080 portunu kullanıyor, dışarı açıyoruz
+# 2. KRİTİK ADIM: Web arayüzü klasörünü içeri kopyala
+COPY web ./web
+
+# 8080 portunu aç
 EXPOSE 8080
 
 CMD ["./commander"]
