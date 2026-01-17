@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,7 +9,35 @@ import (
 
 	"github.com/cagrisaltik/Sentinel/internal/models"
 	"github.com/gorilla/websocket"
+	_ "modernc.org/sqlite" // SQLite sürücüsü
 )
+
+var db *sql.DB
+
+// Veritabanı kurulumu
+func initDB() {
+	var err error
+	// 'sentinel.db' adında bir dosya oluşturur
+	db, err = sql.Open("sqlite", "sentinel.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Tabloyu oluştur (Eğer yoksa)
+	query := `
+	CREATE TABLE IF NOT EXISTS logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		target TEXT,
+		status INTEGER,
+		latency TEXT,
+		created_at DATETIME
+	);`
+	_, err = db.Exec(query)
+	if err != nil {
+		log.Fatal("Tablo oluşturulamadı:", err)
+	}
+	fmt.Println("💾 Veritabanı bağlantısı hazır.")
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -23,24 +52,21 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("🔵 Ajan bağlandı! Görev emri veriliyor...")
 
-	// --- GÖREV DÖNGÜSÜ (Arka Planda) ---
+	// --- GÖREV VERME (Arka Planda) ---
 	go func() {
 		for {
-			time.Sleep(5 * time.Second) // 5 saniyede bir emir ver
-
+			time.Sleep(10 * time.Second) // 10 saniyede bir
 			gorev := models.Command{
 				Type:   "PING_ISTEGI",
 				Target: "https://www.google.com",
 			}
-
-			fmt.Println("📤 Emir gönderildi: Google kontrolü")
 			if err := ws.WriteJSON(gorev); err != nil {
 				break
 			}
 		}
 	}()
 
-	// --- RAPOR DİNLEME DÖNGÜSÜ ---
+	// --- RAPOR DİNLEME VE KAYDETME ---
 	for {
 		var rapor models.Command
 		err := ws.ReadJSON(&rapor)
@@ -50,14 +76,28 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if rapor.Type == "RAPOR" {
-			fmt.Printf("📊 RAPOR GELDİ -> Hedef: %s | Durum: %d | Hız: %s\n",
-				rapor.Target, rapor.Status, rapor.Time)
+			// 1. Ekrana Yaz
+			fmt.Printf("📊 RAPOR -> %s | %s\n", rapor.Target, rapor.Time)
+
+			// 2. Veritabanına Kaydet
+			_, err := db.Exec("INSERT INTO logs (target, status, latency, created_at) VALUES (?, ?, ?, ?)",
+				rapor.Target, rapor.Status, rapor.Time, time.Now())
+
+			if err != nil {
+				fmt.Println("❌ Kayıt hatası:", err)
+			} else {
+				fmt.Println("💾 Veri kaydedildi.")
+			}
 		}
 	}
 }
 
 func main() {
+	initDB() // Veritabanını başlat
+
 	fmt.Println("🚀 Commander 8080 portunda...")
 	http.HandleFunc("/ws", handleConnections)
-	http.ListenAndServe(":8080", nil)
+
+	// Sunucuyu başlat
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
