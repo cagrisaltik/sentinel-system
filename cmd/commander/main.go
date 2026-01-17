@@ -198,6 +198,12 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		if msg.Type == "RAPOR" {
 			db.Exec("INSERT INTO logs (target, status, latency, agent, created_at, cpu, ram, disk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now().UTC(), msg.CPU, msg.RAM, msg.Disk)
+
+			if err != nil {
+				fmt.Println("❌ KRİTİK VERİTABANI HATASI:", err)
+			} else {
+				fmt.Printf("✅ Kayıt Başarılı: %s (%d)\n", msg.Target, msg.Status)
+			}
 		}
 	}
 }
