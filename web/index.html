@@ -88,8 +88,10 @@
         </div>
     </div>
 
-    <script>
+   <script>
         const ctx = document.getElementById('mainChart').getContext('2d');
+        
+        // Mavi Gradient Arka Plan
         let gradient = ctx.createLinearGradient(0, 0, 0, 400);
         gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
         gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
@@ -105,21 +107,38 @@
                     backgroundColor: gradient,
                     borderWidth: 2,
                     pointBackgroundColor: '#fff',
+                    pointRadius: 3, // Noktaları biraz belirginleştir
                     fill: true,
-                    tension: 0.4
+                    tension: 0.3 // Çizgi yumuşaklığı
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
+                animation: false, // <--- KRİTİK: Animasyonu kapattık (Oynamayı durdurur)
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
                 scales: {
-                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a1a1aa' } },
+                    x: { 
+                        grid: { color: 'rgba(255,255,255,0.05)' }, 
+                        ticks: { color: '#a1a1aa', maxTicksLimit: 10 } // Çok fazla saat yazısını engelle
+                    },
                     y: { 
                         grid: { color: 'rgba(255,255,255,0.05)' }, 
                         ticks: { color: '#a1a1aa' }, 
                         beginAtZero: true,
-                        suggestedMax: 500 // DÜZELTME: Veri yoksa bile grafik düzgün dursun
+                        min: 0,    // Taban kesinlikle 0
+                        max: 2000  // <--- TAVAN: Burayı 2000 yaptık. (Senin ping 700lerde olduğu için)
+                                   // Eğer pingin düşerse burayı 1000 yapabilirsin.
                     }
                 }
             }
@@ -129,12 +148,12 @@
             try {
                 const response = await fetch('/api/history');
                 const data = await response.json();
+                
                 if (!data) return;
 
-                // 1. İstatistikler
+                // --- 1. İstatistikleri Güncelle ---
                 document.getElementById('totalScans').innerText = data.length;
                 
-                // Aktif Ajan Sayısı (Benzersiz Ajan İsimlerini Say)
                 const uniqueAgents = new Set(data.map(d => d.agent));
                 document.getElementById('activeAgents').innerText = uniqueAgents.size;
 
@@ -143,9 +162,11 @@
                 let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
                 document.getElementById('avgLatency').innerText = avg + "ms";
 
-                // 2. Tablo (Ajan Sütunu Eklendi)
+                // --- 2. Tabloyu Güncelle ---
                 const tableBody = document.querySelector("#logTable tbody");
                 tableBody.innerHTML = "";
+                
+                // Sadece son 20 veriyi tabloya bas
                 data.slice(0, 20).forEach(log => {
                     const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                     const icon = log.status === 200 ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-xmark"></i>';
@@ -159,16 +180,31 @@
                     tableBody.innerHTML += row;
                 });
 
-                // 3. Grafik
+                // --- 3. Grafiği Güncelle ---
+                // Veriyi ters çevir (Eskiden yeniye)
                 const reversedData = [...data].reverse();
-                chart.data.labels = reversedData.map(d => new Date(d.created_at).toLocaleTimeString('tr-TR', {minute:'2-digit', second:'2-digit'}));
-                chart.data.datasets[0].data = reversedData.map(d => parseInt(d.latency));
-                chart.update();
+                
+                // Son 30 veriyi grafikte göster (Çok sıkışmasın)
+                const chartData = reversedData.slice(-30);
 
-            } catch (err) { console.error("Veri hatası:", err); }
+                chart.data.labels = chartData.map(d => {
+                    const date = new Date(d.created_at);
+                    return date.toLocaleTimeString('tr-TR', {minute:'2-digit', second:'2-digit'});
+                });
+                chart.data.datasets[0].data = chartData.map(d => parseInt(d.latency));
+                
+                chart.update(); // Animasyon kapalı olduğu için anında çizilecek
+
+            } catch (err) {
+                console.error("Veri çekilemedi:", err);
+            }
         }
-        setInterval(updateDashboard, 2000);
+
+        // İlk açılışta çalıştır
         updateDashboard();
+        
+        // 2 saniyede bir güncelle
+        setInterval(updateDashboard, 2000);
     </script>
 </body>
 </html>
