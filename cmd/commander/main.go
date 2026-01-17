@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv" // YENİ: String çevirmek için
+	"strings"
 	"sync"
 	"time"
 
@@ -210,8 +211,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- EXCEL RAPORLAMA MOTORU ---
+// --- EXCEL RAPORLAMA MOTORU (RENKLİ SÜRÜM) ---
 func handleExport(w http.ResponseWriter, r *http.Request) {
-	// 1. Verileri Çek (Son 1000 kayıt - Rapor olduğu için bol veri olsun)
+	// 1. Verileri Çek
 	rows, err := db.Query("SELECT id, target, status, latency, agent, created_at, cpu, ram, disk FROM logs ORDER BY id DESC LIMIT 1000")
 	if err != nil {
 		http.Error(w, "Veritabanı hatası", http.StatusInternalServerError)
@@ -224,40 +226,56 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	sheetName := "Sentinel Raporu"
 	f.SetSheetName("Sheet1", sheetName)
 
-	// --- TASARIM VE STİLLER ---
-	// Başlık Stili (Büyük, Kalın, Ortalanmış)
+	// --- STİLLERİ OLUŞTUR ---
+	// Başlık Stili
 	titleStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 20, Color: "#1F4E78"},
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 	})
-	// Tablo Başlığı Stili (Lacivert Arkaplan, Beyaz Yazı)
+	// Tablo Başlığı Stili
 	headerStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#1F4E78"}, Pattern: 1},
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 	})
-	// Veri Stili (Ortalanmış)
+	// Normal Veri Stili (Ortalanmış)
 	centerStyle, _ := f.NewStyle(&excelize.Style{
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 	})
 
+	// --- RENK STİLLERİ (Conditonal Formatting) ---
+	// Kötü Durum (Kırmızı Yazı & Kalın) - Hata veya Yüksek Ping için
+	badStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Color: "#DC2626", Bold: true}, // Kırmızı
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	// İyi Durum (Yeşil Yazı)
+	goodStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Color: "#16A34A", Bold: true}, // Yeşil
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	// Uyarı Durumu (Turuncu Yazı) - Yüksek CPU/RAM için
+	warnStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Color: "#EA580C", Bold: true}, // Turuncu
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
 	// 3. Başlık Satırı
-	f.MergeCell(sheetName, "A1", "I1") // Hücreleri birleştir
+	f.MergeCell(sheetName, "A1", "I1")
 	f.SetCellValue(sheetName, "A1", "SENTINEL SİSTEM RAPORU")
 	f.SetCellStyle(sheetName, "A1", "I1", titleStyle)
 	f.SetRowHeight(sheetName, 1, 40)
 
-	// 4. Tablo Başlıkları (Satır 2)
+	// 4. Tablo Başlıkları
 	headers := []string{"ID", "Zaman", "Ajan", "Hedef", "Durum", "Gecikme", "CPU %", "RAM %", "Disk %"}
 	columns := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
-
 	for i, h := range headers {
 		cell := fmt.Sprintf("%s2", columns[i])
 		f.SetCellValue(sheetName, cell, h)
 		f.SetCellStyle(sheetName, cell, cell, headerStyle)
 	}
 
-	// 5. Verileri Doldur
+	// 5. Verileri Doldur ve Renklendir
 	rowIdx := 3
 	for rows.Next() {
 		var id, status int
@@ -266,10 +284,10 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 
 		rows.Scan(&id, &target, &status, &latency, &agent, &createdAt, &cpu, &ram, &disk)
 
-		// Tarihi formatla
 		t, _ := time.Parse(time.RFC3339, createdAt)
 		formattedTime := t.Format("2006-01-02 15:04:05")
 
+		// Hücrelere Veriyi Yaz
 		f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), id)
 		f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), formattedTime)
 		f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), agent)
@@ -280,20 +298,55 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 		f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), fmt.Sprintf("%.1f", ram))
 		f.SetCellValue(sheetName, fmt.Sprintf("I%d", rowIdx), fmt.Sprintf("%.1f", disk))
 
-		// Ortala
+		// --- RENKLENDİRME MANTIĞI ---
+
+		// 1. Varsayılan Stil (Hepsine uygula, sonra özelleri ez)
 		f.SetCellStyle(sheetName, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("I%d", rowIdx), centerStyle)
+
+		// 2. STATUS KONTROLÜ (Sütun E)
+		statusCell := fmt.Sprintf("E%d", rowIdx)
+		if status == 200 {
+			f.SetCellStyle(sheetName, statusCell, statusCell, goodStyle) // Yeşil
+		} else {
+			f.SetCellStyle(sheetName, statusCell, statusCell, badStyle) // Kırmızı
+		}
+
+		// 3. GECİKME (LATENCY) KONTROLÜ (Sütun F)
+		// "56ms" stringini sayıya çevirmemiz lazım
+
+		// Not: Bu importları dosyanın en üstüne eklemelisin, burada logic gösteriyorum:
+		latStr := strings.TrimSuffix(latency, "ms")
+		latVal, _ := strconv.Atoi(latStr)
+		latCell := fmt.Sprintf("F%d", rowIdx)
+
+		if latVal > 300 {
+			f.SetCellStyle(sheetName, latCell, latCell, badStyle) // 300ms üstü Kırmızı
+		} else if latVal > 100 {
+			f.SetCellStyle(sheetName, latCell, latCell, warnStyle) // 100ms üstü Turuncu
+		} else {
+			f.SetCellStyle(sheetName, latCell, latCell, goodStyle) // Düşük ping Yeşil
+		}
+
+		// 4. DONANIM KONTROLÜ (CPU - Sütun G)
+		cpuCell := fmt.Sprintf("G%d", rowIdx)
+		if cpu > 80.0 {
+			f.SetCellStyle(sheetName, cpuCell, cpuCell, badStyle)
+		} else if cpu > 50.0 {
+			f.SetCellStyle(sheetName, cpuCell, cpuCell, warnStyle)
+		}
+
 		rowIdx++
 	}
 
-	// 6. Sütun Genişliklerini Ayarla (Otomatik sığsın diye elle genişletiyoruz)
-	f.SetColWidth(sheetName, "B", "B", 20) // Zaman
-	f.SetColWidth(sheetName, "C", "C", 25) // Ajan
-	f.SetColWidth(sheetName, "D", "D", 30) // Hedef
-	f.SetColWidth(sheetName, "F", "I", 10) // İstatistikler
+	// 6. Sütun Genişlikleri
+	f.SetColWidth(sheetName, "B", "B", 20)
+	f.SetColWidth(sheetName, "C", "C", 25)
+	f.SetColWidth(sheetName, "D", "D", 30)
+	f.SetColWidth(sheetName, "F", "I", 12)
 
-	// 7. Dosyayı İndirt
+	// 7. İndirt
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=sentinel_rapor.xlsx")
+	w.Header().Set("Content-Disposition", "attachment; filename=sentinel_renkli_rapor.xlsx")
 	w.Header().Set("Content-Transfer-Encoding", "binary")
 	f.WriteTo(w)
 }
