@@ -1,29 +1,26 @@
 # --- Aşama 1: İnşaat (Builder) ---
-FROM golang:1.22-alpine AS builder
+# '1.22' yerine direkt 'alpine' diyerek en son sürümü alıyoruz
+FROM golang:alpine AS builder
 
 WORKDIR /app
 
-# Kütüphane dosyalarını kopyala
+# go.mod dosyasını kopyala
 COPY go.mod ./
-# (Eğer ileride go.sum olursa onu da buraya ekleriz: COPY go.mod go.sum ./)
-RUN go mod download
+
+# Şimdilik dış kütüphane kullanmadığımız için bu satırı kapattık (Hata vermesin diye)
+# RUN go mod download
 
 # Kodları kopyala
 COPY . .
 
-# Uygulamayı derle (build)
-# -o scout : Çıktı dosyasının adı 'scout' olsun
-# ./cmd/scout/main.go : Derlenecek dosya yolu
+# Derle
 RUN go build -o scout ./cmd/scout/main.go
 
 # --- Aşama 2: Çalıştırma (Runner) ---
-# Sadece çalışacak minik bir Linux kullan (Alpine)
 FROM alpine:latest
 
 WORKDIR /root/
 
-# İlk aşamada derlediğimiz 'scout' dosyasını buraya al
 COPY --from=builder /app/scout .
 
-# Uygulamayı çalıştır
 CMD ["./scout"]
