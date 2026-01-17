@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cagrisaltik/Sentinel/internal/models"
+	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
 )
