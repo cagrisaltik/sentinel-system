@@ -68,6 +68,10 @@
             <button class="filter-btn" onclick="setMode('1')">1 Saat</button>
             <button class="filter-btn" onclick="setMode('6')">6 Saat</button>
             <button class="filter-btn" onclick="setMode('24')">24 Saat</button>
+
+            <button class="filter-btn" style="background: #10b981; color: white; margin-left: 10px;" onclick="downloadExcel()">
+                <i class="fa-solid fa-file-excel"></i> Rapor İndir
+            </button>
         </div>
     </header>
 
@@ -110,6 +114,10 @@
     </div>
 
    <script>
+function downloadExcel() {
+            window.location.href = '/api/export';
+        }
+
         // --- AYARLAR ---
         let currentMode = 'live'; 
         let liveInterval = null;

@@ -12,6 +12,7 @@ import (
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
+	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -208,12 +209,102 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- EXCEL RAPORLAMA MOTORU ---
+func handleExport(w http.ResponseWriter, r *http.Request) {
+	// 1. Verileri Çek (Son 1000 kayıt - Rapor olduğu için bol veri olsun)
+	rows, err := db.Query("SELECT id, target, status, latency, agent, created_at, cpu, ram, disk FROM logs ORDER BY id DESC LIMIT 1000")
+	if err != nil {
+		http.Error(w, "Veritabanı hatası", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// 2. Excel Dosyasını Oluştur
+	f := excelize.NewFile()
+	sheetName := "Sentinel Raporu"
+	f.SetSheetName("Sheet1", sheetName)
+
+	// --- TASARIM VE STİLLER ---
+	// Başlık Stili (Büyük, Kalın, Ortalanmış)
+	titleStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 20, Color: "#1F4E78"},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	// Tablo Başlığı Stili (Lacivert Arkaplan, Beyaz Yazı)
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#1F4E78"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	// Veri Stili (Ortalanmış)
+	centerStyle, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
+	// 3. Başlık Satırı
+	f.MergeCell(sheetName, "A1", "I1") // Hücreleri birleştir
+	f.SetCellValue(sheetName, "A1", "SENTINEL SİSTEM RAPORU")
+	f.SetCellStyle(sheetName, "A1", "I1", titleStyle)
+	f.SetRowHeight(sheetName, 1, 40)
+
+	// 4. Tablo Başlıkları (Satır 2)
+	headers := []string{"ID", "Zaman", "Ajan", "Hedef", "Durum", "Gecikme", "CPU %", "RAM %", "Disk %"}
+	columns := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
+
+	for i, h := range headers {
+		cell := fmt.Sprintf("%s2", columns[i])
+		f.SetCellValue(sheetName, cell, h)
+		f.SetCellStyle(sheetName, cell, cell, headerStyle)
+	}
+
+	// 5. Verileri Doldur
+	rowIdx := 3
+	for rows.Next() {
+		var id, status int
+		var target, latency, agent, createdAt string
+		var cpu, ram, disk float64
+
+		rows.Scan(&id, &target, &status, &latency, &agent, &createdAt, &cpu, &ram, &disk)
+
+		// Tarihi formatla
+		t, _ := time.Parse(time.RFC3339, createdAt)
+		formattedTime := t.Format("2006-01-02 15:04:05")
+
+		f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), id)
+		f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), formattedTime)
+		f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), agent)
+		f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), target)
+		f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), status)
+		f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), latency)
+		f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), fmt.Sprintf("%.1f", cpu))
+		f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), fmt.Sprintf("%.1f", ram))
+		f.SetCellValue(sheetName, fmt.Sprintf("I%d", rowIdx), fmt.Sprintf("%.1f", disk))
+
+		// Ortala
+		f.SetCellStyle(sheetName, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("I%d", rowIdx), centerStyle)
+		rowIdx++
+	}
+
+	// 6. Sütun Genişliklerini Ayarla (Otomatik sığsın diye elle genişletiyoruz)
+	f.SetColWidth(sheetName, "B", "B", 20) // Zaman
+	f.SetColWidth(sheetName, "C", "C", 25) // Ajan
+	f.SetColWidth(sheetName, "D", "D", 30) // Hedef
+	f.SetColWidth(sheetName, "F", "I", 10) // İstatistikler
+
+	// 7. Dosyayı İndirt
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=sentinel_rapor.xlsx")
+	w.Header().Set("Content-Transfer-Encoding", "binary")
+	f.WriteTo(w)
+}
+
 func main() {
 	initDB()
 	startTaskScheduler()
 	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/api/history", getHistory)
 	http.HandleFunc("/api/targets", handleTargets)
+	http.HandleFunc("/api/export", handleExport) // YENİ: Excel İndirme Linki
 	http.HandleFunc("/api/agents", handleActiveAgents)
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 	log.Fatal(http.ListenAndServe(":8080", nil))
