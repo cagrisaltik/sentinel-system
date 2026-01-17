@@ -110,9 +110,31 @@
     </div>
 
    <script>
-        // --- AYARLAR VE DEĞİŞKENLER ---
+        // --- AYARLAR ---
         let currentMode = 'live'; 
         let liveInterval = null;
+
+        // Ajanlar için Renk Havuzu (Neon Tonlar)
+        const colorPalette = [
+            '#3b82f6', // Mavi
+            '#10b981', // Yeşil
+            '#f59e0b', // Turuncu
+            '#ec4899', // Pembe
+            '#8b5cf6', // Mor
+            '#ef4444', // Kırmızı
+            '#06b6d4', // Cyan
+        ];
+
+        // Ajan ismine göre sabit renk bulucu
+        const agentColors = {};
+        function getColorForAgent(agentName) {
+            if (!agentColors[agentName]) {
+                // Sıradaki rengi seç
+                const index = Object.keys(agentColors).length % colorPalette.length;
+                agentColors[agentName] = colorPalette[index];
+            }
+            return agentColors[agentName];
+        }
 
         // --- BUTON İŞLEMLERİ ---
         function setMode(mode) {
@@ -131,18 +153,28 @@
 
         // --- GRAFİK KURULUMLARI ---
         const ctx = document.getElementById('mainChart').getContext('2d');
-        let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)'); 
-        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
         
         const mainChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: [], datasets: [{ label: 'Gecikme (ms)', data: [], borderColor: '#3b82f6', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 2 }] },
+            data: { labels: [], datasets: [] }, // Veri dinamik dolacak
             options: { 
                 responsive: true, 
                 maintainAspectRatio: false, 
-                animation: true, 
-                plugins: { legend: { display: false } }, 
+                animation: false, 
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: { 
+                    legend: { 
+                        display: true, // ARTIK EFSANE AÇIK (Hangi renk kimin?)
+                        labels: { color: '#a1a1aa', font: { family: 'JetBrains Mono' } }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }, 
                 scales: { 
                     x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { display: false } }, 
                     y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } 
@@ -179,61 +211,50 @@
 
         // --- ANA RENDER FONKSİYONU ---
         function renderData(data) {
-            if (!data || data.length === 0) {
-                // Veri yoksa grafikleri sıfırla
-                mainChart.data.labels = [];
-                mainChart.data.datasets[0].data = [];
-                mainChart.update();
-                return;
-            }
+            if (!data || data.length === 0) return;
 
-            // 1. İstatistik Hesaplama
+            // 1. İstatistikler
             document.getElementById('totalScans').innerText = data.length;
             let totalLatency = 0;
             let successCount = 0;
             
-            // Canlı Ajan Hesabı (Son 45 saniye)
+            // Canlı Ajan Kontrolü
             const now = new Date();
             const activeSet = new Set();
-
             data.forEach(d => {
                 totalLatency += parseInt(d.latency);
                 if(d.status === 200) successCount++;
-                
-                // UTC zaman farkını düzeltmek için
-                const logTime = new Date(d.created_at);
-                if ((now - logTime) < 45000) activeSet.add(d.agent);
+                if ((now - new Date(d.created_at)) < 45000) activeSet.add(d.agent);
             });
 
-            // İstatistikleri Ekrana Bas
-            const avg = data.length ? Math.round(totalLatency / data.length) : 0;
-            document.getElementById('avgLatency').innerText = avg + "ms";
-
+            document.getElementById('avgLatency').innerText = (data.length ? Math.round(totalLatency / data.length) : 0) + "ms";
             const successRate = data.length ? Math.round((successCount / data.length) * 100) : 0;
             const healthEl = document.getElementById('systemHealth');
             healthEl.innerText = `%${successRate}`;
             healthEl.style.color = successRate === 100 ? '#10b981' : (successRate > 50 ? '#f59e0b' : '#ef4444');
+            if (currentMode === 'live') document.getElementById('activeAgents').innerText = activeSet.size;
 
-            if (currentMode === 'live') {
-                document.getElementById('activeAgents').innerText = activeSet.size;
-            }
-
-            // 2. Pasta Grafik
             pieChart.data.datasets[0].data = [successCount, data.length - successCount];
             pieChart.update();
 
-            // 3. Tablo (Veriler API'den ID DESC yani Yeniden Eskiye geliyor)
-            // Tabloda en yeniler üstte kalsın, dokunmuyoruz.
+            // 2. Tablo (Karışık gelmesin, en yeniler üstte)
             const tableBody = document.querySelector("#logTable tbody");
             tableBody.innerHTML = "";
-            data.slice(0, 10).forEach(log => {
+            // Veri ID DESC geliyor (Yeniden eskiye), tablo için mükemmel.
+            data.slice(0, 20).forEach(log => {
                 const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                 let cpuClass = log.cpu > 80 ? 'sys-crit' : (log.cpu > 50 ? 'sys-warn' : '');
                 let ramClass = log.ram > 80 ? 'sys-crit' : (log.ram > 60 ? 'sys-warn' : '');
                 
+                // Ajanın rengini bul ve isminin yanına nokta koy
+                const color = getColorForAgent(log.agent);
+                
                 tableBody.innerHTML += `<tr>
                     <td>
-                        <div style="font-weight:bold; color:#60a5fa; margin-bottom:4px;">${log.agent}</div>
+                        <div style="font-weight:bold; color:${color}; margin-bottom:4px;">
+                            <span style="display:inline-block; width:8px; height:8px; background:${color}; border-radius:50%; margin-right:5px;"></span>
+                            ${log.agent}
+                        </div>
                         <div><span class="sys-badge ${cpuClass}">CPU %${Math.round(log.cpu||0)}</span><span class="sys-badge ${ramClass}">RAM %${Math.round(log.ram||0)}</span></div>
                     </td>
                     <td style="color:#a1a1aa; font-size:0.8rem;">${log.target}</td>
@@ -242,27 +263,56 @@
                 </tr>`;
             });
 
-            // 4. Çizgi Grafik (DÜZELTME BURADA)
-            // Grafik zaman çizelgesidir. Solda ESKİ, Sağda YENİ olmalı.
-            // API bize [Yeni, Orta, Eski] veriyor.
-            // Biz bunu [Eski, Orta, Yeni] yapmalıyız -> .reverse()
+            // 3. ÇOKLU ÇİZGİ GRAFİK MANTIĞI (Multi-Line Chart)
             
-            // Orijinal diziyi bozmamak için kopyasını alıp ters çeviriyoruz
-            const chartData = [...data].reverse(); 
+            // Veriyi eskiden yeniye çevir (Grafik akışı için)
+            const chartData = [...data].reverse();
             
-            // Eğer veri çok fazlaysa grafiği boğmamak için son 50 tanesini alalım (History modunda hepsi, Live modda son 50)
-            const dataToShow = currentMode === 'live' ? chartData.slice(-50) : chartData;
+            // Verileri Ajanlara Göre Grupla
+            // { 'Izmir': [10, 20, ...], 'Istanbul': [null, 15, ...] }
+            const groupedData = {};
+            const labels = []; // Ortak zaman ekseni
 
-            mainChart.data.labels = dataToShow.map(d => {
-                const date = new Date(d.created_at);
-                // Saat:Dakika formatı
-                return date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
+            chartData.forEach(log => {
+                const timeLabel = new Date(log.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                
+                // Zaman etiketini ekle (Eğer yoksa)
+                // Not: Basitlik için her gelen veriyi bir zaman noktası kabul ediyoruz.
+                // Profesyonel sistemlerde "Time Series" ekseni kullanılır ama Chart.js'de bu biraz komplekstir.
+                // Burada basit bir yöntem kullanacağız:
+                labels.push(timeLabel);
+
+                // Her ajan için veriyi hazırla
+                if (!groupedData[log.agent]) groupedData[log.agent] = [];
+                
+                // Bu zaman dilimi için bu ajanın verisini ekle
+                // (DİKKAT: Bu basit mantıkta zamanlar kayabilir ama görsel olarak iş görür)
+                groupedData[log.agent].push({x: timeLabel, y: parseInt(log.latency)});
             });
-            mainChart.data.datasets[0].data = dataToShow.map(d => parseInt(d.latency));
+
+            // Datasetleri Oluştur
+            const newDatasets = Object.keys(groupedData).map(agentName => {
+                const color = getColorForAgent(agentName);
+                return {
+                    label: agentName,
+                    data: groupedData[agentName], // {x, y} formatı
+                    borderColor: color,
+                    backgroundColor: color, // Legend kutusu için
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 0, // Noktaları gizle, sadece hoverda göster
+                    pointHoverRadius: 6,
+                    fill: false // Altını doldurma, çizgiler karışmasın
+                };
+            });
+
+            // Grafiği Güncelle
+            mainChart.data.labels = labels;
+            mainChart.data.datasets = newDatasets;
             mainChart.update();
         }
 
-        // --- TASK & AGENT FONKSİYONLARI ---
+        // --- TASK & AGENT ---
         async function fetchActiveAgents() {
             try {
                 const res = await fetch('/api/agents');
@@ -302,9 +352,7 @@
         async function deleteTask(id) { if(confirm('Sil?')) { await fetch(`/api/targets?id=${id}`, { method: 'DELETE' }); loadTasks(); } }
         loadTasks();
 
-        // Başlangıç Modu
         setMode('live');
-
     </script>
 </body>
 </html>

@@ -145,7 +145,7 @@ func getHistory(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Varsayılan: Son 50 kayıt (Canlı izleme için)
 		rows, err = db.Query(`SELECT id, target, status, latency, agent, created_at, cpu, ram, disk 
-							  FROM logs ORDER BY id DESC LIMIT 50`)
+							  FROM logs ORDER BY id DESC LIMIT 200`)
 	}
 
 	if err != nil {
