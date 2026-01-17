@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings" // YENİ: Metin işleme kütüphanesi
 	"time"
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
@@ -16,14 +17,13 @@ func main() {
 	if agentName == "" {
 		agentName = "Bilinmeyen-Asker"
 	}
-
 	serverHost := os.Getenv("SERVER_HOST")
 	if serverHost == "" {
 		serverHost = "localhost:8080"
 	}
 	serverURL := fmt.Sprintf("ws://%s/ws", serverHost)
 
-	fmt.Printf("🛡️ Scout [%s] başlatılıyor...\n", agentName)
+	fmt.Printf("🛡️ Scout [%s] başlatılıyor -> %s\n", agentName, serverURL)
 
 	for {
 		connectAndListen(serverURL, agentName)
@@ -40,19 +40,11 @@ func connectAndListen(url, agentName string) {
 	}
 	defer c.Close()
 
-	// --- 1. ADIM: KİMLİK BEYANI (REGISTER) ---
-	// Bağlanır bağlanmaz "Ben geldim" de
-	regMsg := models.Command{
-		Type:  "REGISTER",
-		Agent: agentName,
-	}
-	if err := c.WriteJSON(regMsg); err != nil {
-		log.Println("Kayıt mesajı atılamadı:", err)
-		return
-	}
-	fmt.Println("✅ Sunucuya kayıt olundu. Emir bekleniyor...")
+	// 1. KAYIT OL
+	c.WriteJSON(models.Command{Type: "REGISTER", Agent: agentName})
+	fmt.Println("✅ Kayıt başarılı. Emir bekleniyor...")
 
-	// --- 2. ADIM: EMİR DİNLEME ---
+	// 2. EMİR DİNLE
 	for {
 		var cmd models.Command
 		err := c.ReadJSON(&cmd)
@@ -61,30 +53,35 @@ func connectAndListen(url, agentName string) {
 		}
 
 		if cmd.Type == "PING_ISTEGI" {
-			fmt.Printf("⚡ Görev Geldi: %s -> %s\n", agentName, cmd.Target)
+			// --- YENİ EKLENEN KISIM: IP/URL DÜZELTME ---
+			target := cmd.Target
+			// Eğer başında http:// veya https:// yoksa, varsayılan olarak http:// ekle
+			if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+				target = "http://" + target
+			}
+			// ---------------------------------------------
+
+			fmt.Printf("⚡ Görev: %s\n", target)
 
 			start := time.Now()
-			resp, err := http.Get(cmd.Target)
-			duration := time.Since(start)
+			// Artık düzeltilmiş 'target' değişkenini kullanıyoruz
+			resp, err := http.Get(target)
 
+			duration := time.Since(start)
 			status := 0
 			if err != nil {
-				fmt.Println("❌ Hata:", err)
+				fmt.Println("❌ Hata:", err) // Hatayı konsola bas ama durma
 				status = 500
 			} else {
 				status = resp.StatusCode
 				resp.Body.Close()
 			}
 
-			// Cevabı gönder
-			rapor := models.Command{
-				Type:   "RAPOR",
-				Target: cmd.Target,
-				Status: status,
-				Time:   fmt.Sprintf("%dms", duration.Milliseconds()),
-				Agent:  agentName,
-			}
-			c.WriteJSON(rapor)
+			// Raporu gönder (Orijinal hedef adını koruyarak veya düzelterek gönderebilirsin)
+			c.WriteJSON(models.Command{
+				Type: "RAPOR", Target: target, Status: status, // Raporlarken 'target' (http eklenmiş halini) yolluyoruz
+				Time: fmt.Sprintf("%dms", duration.Milliseconds()), Agent: agentName,
+			})
 		}
 	}
 }
