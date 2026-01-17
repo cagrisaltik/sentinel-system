@@ -20,7 +20,7 @@ var (
 	clientsMu sync.Mutex
 )
 
-// Modeller
+// Modeller (API Yanıtı için)
 type LogEntry struct {
 	ID        int    `json:"id"`
 	Target    string `json:"target"`
@@ -28,6 +28,11 @@ type LogEntry struct {
 	Latency   string `json:"latency"`
 	Agent     string `json:"agent"`
 	CreatedAt string `json:"created_at"`
+
+	// Yeni Alanlar
+	CPU  float64 `json:"cpu"`
+	RAM  float64 `json:"ram"`
+	Disk float64 `json:"disk"`
 }
 type TargetTask struct {
 	ID        int    `json:"id"`
@@ -42,9 +47,24 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	db.Exec(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME);`)
+	// Tabloyu yeni sütunlarla oluştur
+	query := `CREATE TABLE IF NOT EXISTS logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		target TEXT, 
+		status INTEGER, 
+		latency TEXT, 
+		agent TEXT, 
+		created_at DATETIME,
+		cpu REAL,
+		ram REAL,
+		disk REAL
+	);`
+	if _, err := db.Exec(query); err != nil {
+		log.Fatal("Log tablosu hatası:", err)
+	}
+
 	db.Exec(`CREATE TABLE IF NOT EXISTS targets (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, target_url TEXT);`)
-	fmt.Println("💾 Veritabanı ve Görev Sistemi hazır.")
+	fmt.Println("💾 Veritabanı (System Stats) hazır.")
 }
 
 func startTaskScheduler() {
@@ -55,15 +75,12 @@ func startTaskScheduler() {
 			if err != nil {
 				continue
 			}
-
 			for rows.Next() {
 				var agentName, targetUrl string
 				rows.Scan(&agentName, &targetUrl)
-
 				clientsMu.Lock()
 				conn, exists := clients[agentName]
 				clientsMu.Unlock()
-
 				if exists {
 					conn.WriteJSON(models.Command{Type: "PING_ISTEGI", Target: targetUrl})
 				}
@@ -73,27 +90,19 @@ func startTaskScheduler() {
 	}()
 }
 
-// --- YENİ EKLENEN FONKSİYON: AKTİF AJANLARI LİSTELE ---
 func handleActiveAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
-
 	var activeList []string
 	for name := range clients {
 		activeList = append(activeList, name)
 	}
-
-	// Eğer hiç ajan yoksa boş liste dön
 	if activeList == nil {
 		activeList = []string{}
 	}
-
 	json.NewEncoder(w).Encode(activeList)
 }
-
-// -------------------------------------------------------
 
 func handleTargets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -124,12 +133,14 @@ func handleTargets(w http.ResponseWriter, r *http.Request) {
 
 func getHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	rows, _ := db.Query("SELECT id, target, status, latency, agent, created_at FROM logs ORDER BY id DESC LIMIT 50")
+	// Yeni sütunları da çek
+	rows, _ := db.Query("SELECT id, target, status, latency, agent, created_at, cpu, ram, disk FROM logs ORDER BY id DESC LIMIT 50")
 	defer rows.Close()
 	var history []LogEntry
 	for rows.Next() {
 		var e LogEntry
-		rows.Scan(&e.ID, &e.Target, &e.Status, &e.Latency, &e.Agent, &e.CreatedAt)
+		// Scan sırasına dikkat
+		rows.Scan(&e.ID, &e.Target, &e.Status, &e.Latency, &e.Agent, &e.CreatedAt, &e.CPU, &e.RAM, &e.Disk)
 		history = append(history, e)
 	}
 	if history == nil {
@@ -146,7 +157,6 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
-
 	var currentAgentName string
 	for {
 		var msg models.Command
@@ -167,8 +177,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("🔵 Ajan Kayıt: %s\n", currentAgentName)
 		}
 		if msg.Type == "RAPOR" {
-			db.Exec("INSERT INTO logs (target, status, latency, agent, created_at) VALUES (?, ?, ?, ?, ?)",
-				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now().UTC())
+			// Yeni verileri kaydet
+			db.Exec("INSERT INTO logs (target, status, latency, agent, created_at, cpu, ram, disk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now().UTC(), msg.CPU, msg.RAM, msg.Disk)
 		}
 	}
 }
@@ -176,13 +187,10 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 	startTaskScheduler()
-
 	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/api/history", getHistory)
 	http.HandleFunc("/api/targets", handleTargets)
-	http.HandleFunc("/api/agents", handleActiveAgents) // YENİ ROTA
-
+	http.HandleFunc("/api/agents", handleActiveAgents)
 	http.Handle("/", http.FileServer(http.Dir("./web")))
-	fmt.Println("🚀 Commander v3.1 (Agent List) Aktif...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

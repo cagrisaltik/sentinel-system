@@ -13,6 +13,11 @@ import (
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
+
+	// Donanım kütüphaneleri
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 func main() {
@@ -43,11 +48,9 @@ func connectAndListen(url, agentName string) {
 	}
 	defer c.Close()
 
-	// 1. KAYIT OL
 	c.WriteJSON(models.Command{Type: "REGISTER", Agent: agentName})
 	fmt.Println("✅ Kayıt başarılı. Görev bekleniyor...")
 
-	// 2. EMİR DİNLE
 	for {
 		var cmd models.Command
 		err := c.ReadJSON(&cmd)
@@ -63,52 +66,52 @@ func connectAndListen(url, agentName string) {
 			var duration time.Duration
 			var errCheck error
 
-			// --- ZEKİ MOD SEÇİCİ ---
 			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-				// MOD 1: HTTP İSTEĞİ
 				status, duration, errCheck = checkHTTP(target)
 			} else if strings.Contains(target, ":") {
-				// MOD 2: PORT KONTROLÜ (Telnet benzeri)
-				// Örn: 1.1.1.1:53 veya google.com:443
 				status, duration, errCheck = checkPort(target)
 			} else {
-				// MOD 3: PING (ICMP)
-				// Örn: 1.1.1.1 veya google.com
 				status, duration, errCheck = checkPing(target)
 			}
 
-			// Hata varsa konsola bas
 			if errCheck != nil {
 				fmt.Println("❌ Hata:", errCheck)
-				// Ping başarısızsa status 0 veya 500 dönebiliriz
 				if status == 0 {
 					status = 500
 				}
 			}
 
-			// Raporu gönder
+			// --- YENİ: SİSTEM BİLGİLERİNİ TOPLA ---
+			cpuUsage, _ := cpu.Percent(0, false)
+			vMem, _ := mem.VirtualMemory()
+			dStat, _ := disk.Usage("/")
+
+			currentCPU := 0.0
+			if len(cpuUsage) > 0 {
+				currentCPU = cpuUsage[0]
+			}
+			// ---------------------------------------
+
 			c.WriteJSON(models.Command{
 				Type: "RAPOR", Target: target, Status: status,
 				Time: fmt.Sprintf("%dms", duration.Milliseconds()), Agent: agentName,
+
+				// Donanım verilerini pakete ekle
+				CPU:  currentCPU,
+				RAM:  vMem.UsedPercent,
+				Disk: dStat.UsedPercent,
 			})
 		}
 	}
 }
 
-// --- YARDIMCI FONKSİYONLAR ---
-
-// 1. HTTP KONTROLÜ (SSL Hatasını Yoksayar)
+// --- YARDIMCI FONKSİYONLAR (Aynı kalıyor) ---
 func checkHTTP(target string) (int, time.Duration, error) {
-	// SSL Sertifika hatalarını (x509) yoksaymak için özel Transport
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
-
 	start := time.Now()
 	resp, err := client.Get(target)
 	duration := time.Since(start)
-
 	if err != nil {
 		return 0, duration, err
 	}
@@ -116,30 +119,24 @@ func checkHTTP(target string) (int, time.Duration, error) {
 	return resp.StatusCode, duration, nil
 }
 
-// 2. PORT KONTROLÜ (TCP Connect)
 func checkPort(target string) (int, time.Duration, error) {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", target, 3*time.Second)
 	duration := time.Since(start)
-
 	if err != nil {
-		return 500, duration, err // Bağlanamadı
+		return 500, duration, err
 	}
 	defer conn.Close()
-	return 200, duration, nil // Bağlandı (200 OK mantığı)
+	return 200, duration, nil
 }
 
-// 3. PING KONTROLÜ (OS Ping Komutu)
 func checkPing(target string) (int, time.Duration, error) {
 	start := time.Now()
-	// Linux/Alpine ping komutu: -c 1 (1 paket), -W 1 (1 saniye bekle)
 	cmd := exec.Command("ping", "-c", "1", "-W", "1", target)
-
 	err := cmd.Run()
 	duration := time.Since(start)
-
 	if err != nil {
-		return 500, duration, err // Ping gitmedi
+		return 500, duration, err
 	}
-	return 200, duration, nil // Ping gitti
+	return 200, duration, nil
 }

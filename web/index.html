@@ -35,10 +35,9 @@
         .task-form { flex: 1; display: flex; gap: 10px; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 12px; width: 100%; }
         .task-list { flex: 2; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
         
-        /* INPUT ve SELECT STİLLERİ */
         input, select { background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); color: white; padding: 12px; border-radius: 6px; flex: 1; font-family: 'JetBrains Mono'; outline: none; }
         input:focus, select:focus { border-color: var(--accent-color); }
-        select option { background-color: #161b22; color: white; } /* Dropdown içi siyah olsun */
+        select option { background-color: #161b22; color: white; }
 
         button { background: var(--accent-color); color: white; border: none; padding: 0 25px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; }
         button:hover { opacity: 0.9; }
@@ -49,6 +48,11 @@
         th { text-align: left; color: var(--text-muted); padding: 10px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: #161b22; z-index: 10; }
         td { padding: 10px; border-bottom: 1px solid var(--border-color); font-family: 'JetBrains Mono'; }
         .status-ok { color: var(--success-color); } .status-err { color: var(--danger-color); }
+        
+        /* SİSTEM STATS ROZETLERİ */
+        .sys-badge { font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-right: 4px; display: inline-block; background: rgba(255,255,255,0.1); color: #ccc; }
+        .sys-warn { background: rgba(245, 158, 11, 0.2); color: #fbbf24; } /* Sarı */
+        .sys-crit { background: rgba(239, 68, 68, 0.2); color: #f87171; } /* Kırmızı */
 
         @media (max-width: 1024px) { .dashboard-grid { grid-template-columns: 1fr; } .chart-container, .table-container, .task-manager { grid-column: span 1; } .task-manager { flex-direction: column; } }
     </style>
@@ -56,7 +60,7 @@
 <body>
     <header>
         <div class="brand"><i class="fa-solid fa-shield-halved"></i> SENTINEL <span style="font-weight: 300; opacity: 0.6;">C2</span></div>
-        <div style="font-size: 0.9rem; color: var(--text-muted);">v3.1 Dynamic Agents</div>
+        <div style="font-size: 0.9rem; color: var(--text-muted);">v4.0 System Monitor</div>
     </header>
 
     <div class="dashboard-grid">
@@ -67,10 +71,8 @@
 
         <div class="card task-manager">
             <div class="task-form">
-                <select id="targetAgent">
-                    <option value="">Ajan Yükleniyor...</option>
-                </select>
-                <input type="text" id="targetUrl" placeholder="Hedef URL (Örn: google.com)">
+                <select id="targetAgent"> <option value="">Ajan Yükleniyor...</option> </select>
+                <input type="text" id="targetUrl" placeholder="Hedef (Örn: 1.1.1.1:53 veya google.com)">
                 <button onclick="addTask()">+ Ekle</button>
             </div>
             <div class="task-list" id="taskList"></div>
@@ -82,10 +84,10 @@
         </div>
 
         <div class="card table-container">
-            <h3 style="margin-bottom: 10px;">📋 Son Raporlar</h3>
+            <h3 style="margin-bottom: 10px;">📋 Ajan Durumları</h3>
             <div class="table-wrapper">
                 <table id="logTable">
-                    <thead><tr><th>Ajan</th><th>Hedef</th><th>Durum</th><th>Ms</th></tr></thead>
+                    <thead><tr><th>Ajan & Sistem</th><th>Hedef</th><th>Durum</th><th>Ms</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -93,44 +95,23 @@
     </div>
 
     <script>
-        // --- YENİ FONKSİYON: BAĞLI AJANLARI ÇEK ---
         async function fetchActiveAgents() {
             try {
                 const res = await fetch('/api/agents');
                 const agents = await res.json();
-                
                 const select = document.getElementById('targetAgent');
-                const currentSelection = select.value; // Seçili olanı korumaya çalış
-
-                // Listeyi temizle
+                const currentSelection = select.value;
                 select.innerHTML = '';
-
-                if (agents.length === 0) {
-                    select.innerHTML = '<option value="">⚠️ Aktif Ajan Yok</option>';
-                    return;
-                }
-
-                // Listeyi doldur
+                if (agents.length === 0) { select.innerHTML = '<option value="">⚠️ Aktif Ajan Yok</option>'; return; }
                 agents.forEach(agent => {
                     const option = document.createElement('option');
-                    option.value = agent;
-                    option.innerText = `🔵 ${agent}`;
+                    option.value = agent; option.innerText = `🔵 ${agent}`;
                     select.appendChild(option);
                 });
-
-                // Eğer eski seçim hala listedeyse onu seçili yap
-                if (agents.includes(currentSelection)) {
-                    select.value = currentSelection;
-                }
-            } catch (e) {
-                console.error("Ajan listesi alınamadı", e);
-            }
+                if (agents.includes(currentSelection)) select.value = currentSelection;
+            } catch (e) {}
         }
-        
-        // 3 saniyede bir ajan listesini güncelle
-        setInterval(fetchActiveAgents, 3000);
-        fetchActiveAgents(); // Açılışta hemen çek
-        // ------------------------------------------
+        setInterval(fetchActiveAgents, 3000); fetchActiveAgents();
 
         async function loadTasks() {
             try {
@@ -138,134 +119,94 @@
                 const tasks = await res.json();
                 const container = document.getElementById('taskList');
                 container.innerHTML = '';
-                if(tasks.length === 0) container.innerHTML = '<span style="color:#555; font-style:italic;">Henüz aktif görev yok.</span>';
-                
                 tasks.forEach(t => {
-                    container.innerHTML += `
-                        <div class="task-item">
-                            <span><b>${t.agent_name}</b> &rarr; ${t.target_url}</span>
-                            <i class="fa-solid fa-trash" onclick="deleteTask(${t.id})"></i>
-                        </div>`;
+                    container.innerHTML += `<div class="task-item"><span><b>${t.agent_name}</b> &rarr; ${t.target_url}</span><i class="fa-solid fa-trash" onclick="deleteTask(${t.id})"></i></div>`;
                 });
             } catch(e) {}
         }
-
         async function addTask() {
-            const agent = document.getElementById('targetAgent').value; // Artık select'ten alıyoruz
+            const agent = document.getElementById('targetAgent').value;
             const url = document.getElementById('targetUrl').value.trim();
-            if(!agent || !url) return alert("Lütfen Ajan ve URL seçiniz!");
-            
-            await fetch('/api/targets', {
-                method: 'POST',
-                body: JSON.stringify({ agent_name: agent, target_url: url })
-            });
-            document.getElementById('targetUrl').value = ''; 
-            loadTasks();
+            if(!agent || !url) return alert("Eksik bilgi!");
+            await fetch('/api/targets', { method: 'POST', body: JSON.stringify({ agent_name: agent, target_url: url }) });
+            document.getElementById('targetUrl').value = ''; loadTasks();
         }
-
-        async function deleteTask(id) {
-            if(confirm('Görevi silmek istiyor musun?')) {
-                await fetch(`/api/targets?id=${id}`, { method: 'DELETE' });
-                loadTasks();
-            }
-        }
+        async function deleteTask(id) { if(confirm('Sil?')) { await fetch(`/api/targets?id=${id}`, { method: 'DELETE' }); loadTasks(); } }
         loadTasks();
 
         const ctx = document.getElementById('mainChart').getContext('2d');
         let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
-        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)'); gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
 
         const chart = new Chart(ctx, {
             type: 'line',
             data: { labels: [], datasets: [{ label: 'Gecikme', data: [], borderColor: '#3b82f6', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 2 }] },
-            options: {
-                responsive: true, maintainAspectRatio: false, animation: false,
-                plugins: { legend: { display: false } },
-                scales: { x: { display: false }, y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } }
-            }
+            options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { beginAtZero: true, max: 1000, grid: { color: '#333' } } } }
         });
 
         async function updateDashboard() {
             try {
                 const response = await fetch('/api/history');
                 const data = await response.json();
-                
-                // Veri yoksa veya boşsa her şeyi sıfırla
                 if (!data || data.length === 0) {
                     document.getElementById('activeAgents').innerText = "0";
-                    document.getElementById('systemHealth').innerText = "%0";
-                    document.getElementById('systemHealth').style.color = 'var(--text-muted)';
+                    document.getElementById('systemHealth').innerText = "%0 (Offline)";
                     return;
                 }
 
                 const now = new Date();
                 const activeAgentsSet = new Set();
-                
-                // Son 45 saniyede sinyal verenleri say
-                data.forEach(log => { 
-                    if ((now - new Date(log.created_at)) < 45000) {
-                        activeAgentsSet.add(log.agent);
-                    }
-                });
-                
+                data.forEach(log => { if ((now - new Date(log.created_at)) < 45000) activeAgentsSet.add(log.agent); });
                 const activeCount = activeAgentsSet.size;
                 document.getElementById('activeAgents').innerText = activeCount;
                 document.getElementById('totalScans').innerText = data.length;
                 
-                // --- KRİTİK DÜZELTME: AJAN YOKSA SAĞLIK SIFIRDIR ---
                 const healthEl = document.getElementById('systemHealth');
-                
-                if (activeCount === 0) {
-                    healthEl.innerText = "%0 (Offline)";
-                    healthEl.style.color = 'var(--text-muted)'; // Gri renk yap
-                } else {
-                    // Ajan varsa başarı oranını hesapla
-                    let totalLatency = 0;
-                    data.forEach(d => totalLatency += parseInt(d.latency));
-                    let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
-                    document.getElementById('avgLatency').innerText = avg + "ms";
-
-                    // Son 20 kaydın başarı oranı
+                if (activeCount === 0) { healthEl.innerText = "%0 (Offline)"; healthEl.style.color = '#a1a1aa'; }
+                else {
+                    let totalLatency = 0; data.forEach(d => totalLatency += parseInt(d.latency));
+                    document.getElementById('avgLatency').innerText = (data.length ? Math.round(totalLatency / data.length) : 0) + "ms";
                     const recentLogs = data.slice(0, 20);
                     const successCount = recentLogs.filter(l => l.status === 200).length;
-                    const healthPercentage = Math.round((successCount / recentLogs.length) * 100);
-                    
-                    healthEl.innerText = `%${healthPercentage}`;
-                    
-                    if(healthPercentage === 100) healthEl.style.color = 'var(--success-color)';
-                    else if(healthPercentage > 50) healthEl.style.color = 'var(--warning-color)';
-                    else healthEl.style.color = 'var(--danger-color)';
+                    const hp = Math.round((successCount / recentLogs.length) * 100);
+                    healthEl.innerText = `%${hp}`;
+                    healthEl.style.color = hp === 100 ? '#10b981' : (hp > 50 ? '#f59e0b' : '#ef4444');
                 }
-                // -----------------------------------------------------
 
-                // Tabloyu Güncelle (Son 10)
                 const tableBody = document.querySelector("#logTable tbody");
                 tableBody.innerHTML = "";
                 data.slice(0, 10).forEach(log => {
                     const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
-                    const agentLabel = log.agent ? log.agent : 'Bilinmeyen';
                     
+                    // --- SİSTEM İSTATİSTİKLERİ GÖSTERİMİ ---
+                    let cpuClass = log.cpu > 80 ? 'sys-crit' : (log.cpu > 50 ? 'sys-warn' : '');
+                    let ramClass = log.ram > 80 ? 'sys-crit' : (log.ram > 60 ? 'sys-warn' : '');
+                    
+                    // Sayıları yuvarla
+                    const cpuVal = Math.round(log.cpu || 0);
+                    const ramVal = Math.round(log.ram || 0);
+
                     tableBody.innerHTML += `<tr>
-                        <td><span style="color:#60a5fa; background:#1e3a8a; padding:2px 6px; border-radius:4px; font-size:0.75rem;">${agentLabel}</span></td>
+                        <td>
+                            <div style="font-weight:bold; color:#60a5fa; margin-bottom:4px;">${log.agent}</div>
+                            <div>
+                                <span class="sys-badge ${cpuClass}"><i class="fa-solid fa-microchip"></i> %${cpuVal}</span>
+                                <span class="sys-badge ${ramClass}"><i class="fa-solid fa-memory"></i> %${ramVal}</span>
+                            </div>
+                        </td>
                         <td style="color:#a1a1aa; font-size:0.8rem;">${log.target}</td>
                         <td class="${statusClass}">${log.status}</td>
                         <td>${log.latency}</td>
                     </tr>`;
                 });
 
-                // Grafiği Güncelle
                 const reversed = [...data].reverse().slice(-50);
                 chart.data.labels = reversed.map(d => new Date(d.created_at).toLocaleTimeString());
                 chart.data.datasets[0].data = reversed.map(d => parseInt(d.latency));
                 chart.update();
-
-            } catch (e) { 
-                console.log("Veri bekleniyor..."); 
-            }
+            } catch (e) {}
         }
-        setInterval(updateDashboard, 2000);
-        updateDashboard();
+        setInterval(updateDashboard, 2000); updateDashboard();
     </script>
 </body>
 </html>
