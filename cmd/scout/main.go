@@ -17,7 +17,11 @@ func main() {
 		agentName = "Bilinmeyen-Asker"
 	}
 
-	serverURL := "ws://localhost:8080/ws"
+	serverHost := os.Getenv("SERVER_HOST")
+	if serverHost == "" {
+		serverHost = "localhost:8080" // Varsayılan
+	}
+	serverURL := fmt.Sprintf("ws://%s/ws", serverHost)
 	fmt.Printf("🛡️ Scout [%s] sunucuya bağlanıyor...\n", agentName)
 
 	c, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
