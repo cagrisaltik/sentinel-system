@@ -241,7 +241,7 @@
             const tableBody = document.querySelector("#logTable tbody");
             tableBody.innerHTML = "";
             // Veri ID DESC geliyor (Yeniden eskiye), tablo için mükemmel.
-            data.slice(0, 20).forEach(log => {
+            data.slice(0, 7).forEach(log => {
                 const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                 let cpuClass = log.cpu > 80 ? 'sys-crit' : (log.cpu > 50 ? 'sys-warn' : '');
                 let ramClass = log.ram > 80 ? 'sys-crit' : (log.ram > 60 ? 'sys-warn' : '');
