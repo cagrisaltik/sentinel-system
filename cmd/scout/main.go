@@ -7,27 +7,24 @@ import (
 	"os"
 	"time"
 
-	"github.com/cagrisaltik/Sentinel/internal/models"
+	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
 )
 
 func main() {
-	// Ajan ismini al
 	agentName := os.Getenv("AGENT_NAME")
 	if agentName == "" {
 		agentName = "Bilinmeyen-Asker"
 	}
 
-	// Sunucu adresini dinamik al
 	serverHost := os.Getenv("SERVER_HOST")
 	if serverHost == "" {
 		serverHost = "localhost:8080"
 	}
 	serverURL := fmt.Sprintf("ws://%s/ws", serverHost)
 
-	fmt.Printf("🛡️ Scout [%s] sunucuya bağlanıyor: %s ...\n", agentName, serverURL)
+	fmt.Printf("🛡️ Scout [%s] başlatılıyor...\n", agentName)
 
-	// Yeniden bağlanma döngüsü (Reconnection logic)
 	for {
 		connectAndListen(serverURL, agentName)
 		fmt.Println("⚠️ Bağlantı koptu, 5 saniye içinde tekrar deneniyor...")
@@ -43,8 +40,19 @@ func connectAndListen(url, agentName string) {
 	}
 	defer c.Close()
 
-	fmt.Println("✅ Bağlantı başarılı! Emir bekleniyor.")
+	// --- 1. ADIM: KİMLİK BEYANI (REGISTER) ---
+	// Bağlanır bağlanmaz "Ben geldim" de
+	regMsg := models.Command{
+		Type:  "REGISTER",
+		Agent: agentName,
+	}
+	if err := c.WriteJSON(regMsg); err != nil {
+		log.Println("Kayıt mesajı atılamadı:", err)
+		return
+	}
+	fmt.Println("✅ Sunucuya kayıt olundu. Emir bekleniyor...")
 
+	// --- 2. ADIM: EMİR DİNLEME ---
 	for {
 		var cmd models.Command
 		err := c.ReadJSON(&cmd)
@@ -53,7 +61,7 @@ func connectAndListen(url, agentName string) {
 		}
 
 		if cmd.Type == "PING_ISTEGI" {
-			fmt.Printf("⚡ Görev: %s -> %s\n", agentName, cmd.Target)
+			fmt.Printf("⚡ Görev Geldi: %s -> %s\n", agentName, cmd.Target)
 
 			start := time.Now()
 			resp, err := http.Get(cmd.Target)
@@ -68,17 +76,15 @@ func connectAndListen(url, agentName string) {
 				resp.Body.Close()
 			}
 
-			// Raporu hazırla (İmzalı)
+			// Cevabı gönder
 			rapor := models.Command{
 				Type:   "RAPOR",
 				Target: cmd.Target,
 				Status: status,
 				Time:   fmt.Sprintf("%dms", duration.Milliseconds()),
-				Agent:  agentName, // İMZA BURADA
+				Agent:  agentName,
 			}
-
 			c.WriteJSON(rapor)
-			fmt.Printf("📤 Rapor yollandı: %d | %s\n", status, duration)
 		}
 	}
 }
