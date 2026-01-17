@@ -7,67 +7,78 @@ import (
 	"os"
 	"time"
 
-	"github.com/cagrisaltik/Sentinel/internal/models" // Import yoluna dikkat!
+	"github.com/cagrisaltik/Sentinel/internal/models"
 	"github.com/gorilla/websocket"
 )
 
 func main() {
+	// Ajan ismini al
 	agentName := os.Getenv("AGENT_NAME")
 	if agentName == "" {
 		agentName = "Bilinmeyen-Asker"
 	}
 
+	// Sunucu adresini dinamik al
 	serverHost := os.Getenv("SERVER_HOST")
 	if serverHost == "" {
-		serverHost = "localhost:8080" // Varsayılan
+		serverHost = "localhost:8080"
 	}
 	serverURL := fmt.Sprintf("ws://%s/ws", serverHost)
-	fmt.Printf("🛡️ Scout [%s] sunucuya bağlanıyor...\n", agentName)
 
-	c, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
+	fmt.Printf("🛡️ Scout [%s] sunucuya bağlanıyor: %s ...\n", agentName, serverURL)
+
+	// Yeniden bağlanma döngüsü (Reconnection logic)
+	for {
+		connectAndListen(serverURL, agentName)
+		fmt.Println("⚠️ Bağlantı koptu, 5 saniye içinde tekrar deneniyor...")
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func connectAndListen(url, agentName string) {
+	c, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
-		log.Fatal("Bağlantı hatası:", err)
+		log.Println("❌ Sunucuya bağlanılamadı:", err)
+		return
 	}
 	defer c.Close()
 
-	// --- DİNLEME DÖNGÜSÜ ---
+	fmt.Println("✅ Bağlantı başarılı! Emir bekleniyor.")
+
 	for {
-		// 1. Komutandan emir bekle
 		var cmd models.Command
-		err := c.ReadJSON(&cmd) // Gelen JSON'ı oku
+		err := c.ReadJSON(&cmd)
 		if err != nil {
-			log.Println("Bağlantı koptu:", err)
 			return
 		}
 
-		// 2. Eğer emir "PING_ISTEGI" ise göreve çık
 		if cmd.Type == "PING_ISTEGI" {
-			fmt.Printf("⚡ Görev Alındı: %s hedefine gidiliyor...\n", cmd.Target)
+			fmt.Printf("⚡ Görev: %s -> %s\n", agentName, cmd.Target)
 
-			// Ölçüme başla
 			start := time.Now()
 			resp, err := http.Get(cmd.Target)
 			duration := time.Since(start)
 
 			status := 0
 			if err != nil {
-				fmt.Println("❌ Hedefe ulaşılamadı:", err)
+				fmt.Println("❌ Hata:", err)
 				status = 500
 			} else {
 				status = resp.StatusCode
 				resp.Body.Close()
 			}
 
-			// 3. Raporu hazırla ve geri gönder
+			// Raporu hazırla (İmzalı)
 			rapor := models.Command{
 				Type:   "RAPOR",
 				Target: cmd.Target,
 				Status: status,
 				Time:   fmt.Sprintf("%dms", duration.Milliseconds()),
+				Agent:  agentName, // İMZA BURADA
 			}
 
 			c.WriteJSON(rapor)
-			fmt.Printf("✅ Rapor Gönderildi: %d | %s\n", status, duration)
+			fmt.Printf("📤 Rapor yollandı: %d | %s\n", status, duration)
 		}
 	}
 }

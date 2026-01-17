@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel | Command Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #09090b; --card-bg: rgba(24, 24, 27, 0.6); --border-color: rgba(255, 255, 255, 0.08);
+            --accent-color: #3b82f6; --success-color: #10b981; --danger-color: #ef4444;
+            --text-main: #e4e4e7; --text-muted: #a1a1aa;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: var(--bg-color); background-image: radial-gradient(circle at top right, #1e1b4b 0%, transparent 40%); color: var(--text-main); font-family: 'Inter', sans-serif; padding: 2rem; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; }
+        .brand { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; gap: 10px; display: flex; align-items: center; }
+        .brand i { color: var(--accent-color); }
+        .status-badge { background: rgba(16, 185, 129, 0.1); color: var(--success-color); padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+        .live-dot { width: 8px; height: 8px; background: var(--success-color); border-radius: 50%; animation: pulse 2s infinite; }
+
+        .dashboard-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
+        .card { background: var(--card-bg); backdrop-filter: blur(12px); border: 1px solid var(--border-color); border-radius: 16px; padding: 1.5rem; }
+        
+        .stat-card { display: flex; flex-direction: column; gap: 10px; position: relative; }
+        .stat-title { color: var(--text-muted); font-size: 0.9rem; font-weight: 500; }
+        .stat-value { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .stat-icon { font-size: 1.2rem; opacity: 0.5; position: absolute; top: 20px; right: 20px; }
+
+        .chart-container { grid-column: span 3; grid-row: span 2; min-height: 400px; }
+        .table-container { grid-column: span 1; grid-row: span 2; display: flex; flex-direction: column; overflow: hidden; }
+        .table-wrapper { overflow-y: auto; max-height: 350px; margin-top: 10px; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { text-align: left; color: var(--text-muted); padding: 10px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: #161b22; }
+        td { padding: 10px; border-bottom: 1px solid var(--border-color); font-family: 'JetBrains Mono', monospace; }
+        .agent-tag { background: rgba(59, 130, 246, 0.15); color: #60a5fa; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .status-ok { color: var(--success-color); } .status-err { color: var(--danger-color); }
+
+        @media (max-width: 1024px) { .dashboard-grid { grid-template-columns: 1fr; } .chart-container, .table-container { grid-column: span 1; } }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); } 70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand"><i class="fa-solid fa-shield-halved"></i> SENTINEL <span style="font-weight: 300; opacity: 0.6;">SYSTEM</span></div>
+        <div class="status-badge"><div class="live-dot"></div> Sistem Çevrimiçi</div>
+    </header>
+
+    <div class="dashboard-grid">
+        <div class="card stat-card">
+            <i class="fa-solid fa-server stat-icon"></i>
+            <span class="stat-title">Toplam Rapor</span>
+            <span class="stat-value" id="totalScans">0</span>
+        </div>
+        <div class="card stat-card">
+            <i class="fa-solid fa-bolt stat-icon"></i>
+            <span class="stat-title">Ort. Gecikme</span>
+            <span class="stat-value" id="avgLatency">0ms</span>
+        </div>
+        <div class="card stat-card">
+            <i class="fa-solid fa-heart-pulse stat-icon"></i>
+            <span class="stat-title">Sistem Sağlığı</span>
+            <span class="stat-value" style="color: var(--success-color);">%100</span>
+        </div>
+        <div class="card stat-card">
+            <i class="fa-solid fa-network-wired stat-icon"></i>
+            <span class="stat-title">Aktif Ajanlar</span>
+            <span class="stat-value" id="activeAgents">0</span>
+        </div>
+
+        <div class="card chart-container">
+            <h3 style="margin-bottom: 15px; font-weight: 500;">🚀 Canlı Gecikme Analizi</h3>
+            <canvas id="mainChart"></canvas>
+        </div>
+
+        <div class="card table-container">
+            <h3 style="margin-bottom: 10px; font-weight: 500;">📋 Ajan Raporları</h3>
+            <div class="table-wrapper">
+                <table id="logTable">
+                    <thead><tr><th>Ajan</th><th>Durum</th><th>Ping</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        let gradient = ctx.createLinearGradient(0, 0, 0, 400);
+        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
+        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Gecikme (ms)',
+                    data: [],
+                    borderColor: '#3b82f6',
+                    backgroundColor: gradient,
+                    borderWidth: 2,
+                    pointBackgroundColor: '#fff',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a1a1aa' } },
+                    y: { 
+                        grid: { color: 'rgba(255,255,255,0.05)' }, 
+                        ticks: { color: '#a1a1aa' }, 
+                        beginAtZero: true,
+                        suggestedMax: 500 // DÜZELTME: Veri yoksa bile grafik düzgün dursun
+                    }
+                }
+            }
+        });
+
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/history');
+                const data = await response.json();
+                if (!data) return;
+
+                // 1. İstatistikler
+                document.getElementById('totalScans').innerText = data.length;
+                
+                // Aktif Ajan Sayısı (Benzersiz Ajan İsimlerini Say)
+                const uniqueAgents = new Set(data.map(d => d.agent));
+                document.getElementById('activeAgents').innerText = uniqueAgents.size;
+
+                let totalLatency = 0;
+                data.forEach(d => totalLatency += parseInt(d.latency));
+                let avg = data.length > 0 ? Math.round(totalLatency / data.length) : 0;
+                document.getElementById('avgLatency').innerText = avg + "ms";
+
+                // 2. Tablo (Ajan Sütunu Eklendi)
+                const tableBody = document.querySelector("#logTable tbody");
+                tableBody.innerHTML = "";
+                data.slice(0, 20).forEach(log => {
+                    const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
+                    const icon = log.status === 200 ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-xmark"></i>';
+                    
+                    const row = `
+                        <tr>
+                            <td><span class="agent-tag">${log.agent || 'Bilinmeyen'}</span></td>
+                            <td class="${statusClass}">${icon} ${log.status}</td>
+                            <td>${log.latency}</td>
+                        </tr>`;
+                    tableBody.innerHTML += row;
+                });
+
+                // 3. Grafik
+                const reversedData = [...data].reverse();
+                chart.data.labels = reversedData.map(d => new Date(d.created_at).toLocaleTimeString('tr-TR', {minute:'2-digit', second:'2-digit'}));
+                chart.data.datasets[0].data = reversedData.map(d => parseInt(d.latency));
+                chart.update();
+
+            } catch (err) { console.error("Veri hatası:", err); }
+        }
+        setInterval(updateDashboard, 2000);
+        updateDashboard();
+    </script>
+</body>
+</html>
