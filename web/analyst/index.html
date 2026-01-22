@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sentinel | Business Intelligence</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://unpkg.com/gridjs/dist/gridjs.umd.js"></script>
+    <link href="https://unpkg.com/gridjs/dist/theme/mermaid.min.css" rel="stylesheet" />
+    <style>
+        body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); }
+        h2 { margin-top: 0; color: #94a3b8; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; }
+        
+        select { background: #334155; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+        
+        /* Grid.js Özelleştirme */
+        .gridjs-wrapper { border-radius: 8px; }
+        .gridjs-container { color: #333; } /* Tablo içi yazı rengi */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 style="font-weight: 600;">📈 Sentinel Analyst</h1>
+            <div>
+                <select id="agentSelect" onchange="updateChart()">
+                    <option value="">Tüm Ajanlar</option>
+                </select>
+                <select id="timeSelect" onchange="updateChart()">
+                    <option value="hour">Saat Bazlı</option>
+                    <option value="day">Gün Bazlı</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Performans Trendi (Gecikme ms)</h2>
+            <div id="chart"></div>
+        </div>
+
+        <div class="card">
+            <h2>Hedef Bazlı Özet (Tableau View)</h2>
+            <div id="table"></div>
+        </div>
+    </div>
+
+    <script>
+        // 1. APEX CHART KURULUMU
+        var options = {
+            series: [{ name: 'Ort. Gecikme', data: [] }],
+            chart: { type: 'area', height: 350, background: '#1e293b', foreColor: '#cbd5e1', toolbar: { show: true } },
+            stroke: { curve: 'smooth', width: 2 },
+            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.3 } },
+            dataLabels: { enabled: false },
+            xaxis: { type: 'category' }, // Tarih kategorik olacak
+            colors: ['#3b82f6']
+        };
+        var chart = new ApexCharts(document.querySelector("#chart"), options);
+        chart.render();
+
+        // 2. GRID.JS TABLO KURULUMU
+        const grid = new gridjs.Grid({
+            columns: ["Hedef", "Ort. Ping (ms)", "Max Ping", "Başarılı", "Hatalı"],
+            data: [],
+            search: true,
+            sort: true,
+            pagination: { limit: 5 },
+            style: { 
+                table: { 'width': '100%' },
+                th: { 'background-color': '#334155', 'color': '#fff' }
+            }
+        }).render(document.getElementById("table"));
+
+        // 3. VERİ ÇEKME FONKSİYONLARI
+        async function loadAgents() {
+            const res = await fetch('/api/agents');
+            const agents = await res.json();
+            const sel = document.getElementById('agentSelect');
+            agents.forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a; opt.innerText = a;
+                sel.appendChild(opt);
+            });
+        }
+
+        async function updateChart() {
+            const mode = document.getElementById('timeSelect').value;
+            const agent = document.getElementById('agentSelect').value;
+            
+            const res = await fetch(`/api/chart?mode=${mode}&agent=${agent}`);
+            const data = await res.json();
+            
+            // Grafik güncelle
+            chart.updateSeries([{
+                data: data.map(d => ({ x: d.label, y: Math.round(d.value) }))
+            }]);
+        }
+
+        async function updateTable() {
+            const res = await fetch('/api/table');
+            const data = await res.json();
+            
+            // Grid.js güncelle
+            grid.updateConfig({
+                data: data.map(d => [d.target, Math.round(d.avg_ping), d.max_ping, d.success, d.fail])
+            }).forceRender();
+        }
+
+        // Başlangıç
+        loadAgents();
+        updateChart();
+        updateTable();
+        
+        // Otomatik Yenile (30sn)
+        setInterval(() => { updateChart(); updateTable(); }, 30000);
+    </script>
+</body>
+</html>

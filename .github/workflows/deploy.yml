@@ -36,3 +36,13 @@ jobs:
         push: true
         # DİKKAT: tags kısmını kendi kullanıcına göre düzenle
         tags: cagrisaltik/sentinel-scout:latest
+
+    # --- 3. Analyst'i  YÜKLE ---
+    - name: Build & Push (Analyst)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.analyst
+        push: true
+        # DİKKAT: tags kısmını kendi kullanıcına göre düzenle
+        tags: cagrisaltik/sentinel-analyst:latest
