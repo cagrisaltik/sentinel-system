@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/lib/pq v1.10.9
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/xuri/excelize/v2 v2.10.0
 	modernc.org/sqlite v1.44.1

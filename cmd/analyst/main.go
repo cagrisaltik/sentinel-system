@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 )
 
 var db *sql.DB
@@ -36,20 +36,21 @@ func initDB() {
 
 // Grafik Verisi (Saatlik veya Günlük Gruplama)
 func handleChartData(w http.ResponseWriter, r *http.Request) {
-	mode := r.URL.Query().Get("mode") // 'hour' veya 'day'
+	mode := r.URL.Query().Get("mode")
 	agent := r.URL.Query().Get("agent")
 
 	var query string
-	// SQLite'da zaman formatlama ve gruplama
+	// POSTGRES TARİH FONKSİYONU: to_char
 	if mode == "day" {
-		query = `SELECT strftime('%Y-%m-%d', created_at) as time_group, AVG(CAST(replace(latency, 'ms', '') AS INTEGER)) 
-				 FROM logs WHERE agent LIKE ? GROUP BY time_group ORDER BY time_group ASC`
+		query = `SELECT to_char(created_at, 'YYYY-MM-DD') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
+                 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
 	} else {
-		// Varsayılan: Saatlik
-		query = `SELECT strftime('%Y-%m-%d %H:00', created_at) as time_group, AVG(CAST(replace(latency, 'ms', '') AS INTEGER)) 
-				 FROM logs WHERE agent LIKE ? GROUP BY time_group ORDER BY time_group ASC`
+		// Saatlik
+		query = `SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
+                 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
 	}
 
+	// SQLite '?' kullanır, Postgres '$1' kullanır.
 	searchAgent := "%"
 	if agent != "" {
 		searchAgent = agent

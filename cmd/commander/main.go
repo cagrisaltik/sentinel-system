@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv" // YENİ: String çevirmek için
 	"strings"
 	"sync"
@@ -13,8 +14,8 @@ import (
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
+	_ "github.com/lib/pq"
 	"github.com/xuri/excelize/v2"
-	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
@@ -43,19 +44,54 @@ type TargetTask struct {
 
 func initDB() {
 	var err error
-	db, err = sql.Open("sqlite", "sentinel.db")
+	// Ortam değişkenlerinden bilgileri al, yoksa varsayılanı kullan
+	connStr := "postgres://sentinel:gizlisifre@sentineld-db:5432/sentineldb?sslmode=disable"
+
+	// Eğer docker run -e DB_URL="..." ile verirsek onu kullanırız
+	if os.Getenv("DATABASE_URL") != "" {
+		connStr = os.Getenv("DATABASE_URL")
+	}
+
+	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	query := `CREATE TABLE IF NOT EXISTS logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		target TEXT, status INTEGER, latency TEXT, agent TEXT, created_at DATETIME,
-		cpu REAL, ram REAL, disk REAL
-	);`
-	db.Exec(query)
-	db.Exec(`CREATE TABLE IF NOT EXISTS targets (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT, target_url TEXT);`)
-	fmt.Println("💾 Veritabanı (Analytics Ready) hazır.")
+	// Bağlantıyı test et
+	if err = db.Ping(); err != nil {
+		log.Fatal("Veritabanına ulaşılamadı:", err)
+	}
+
+	// --- TABLO OLUŞTURMA (Postgres Syntax) ---
+	// SQLite'daki AUTOINCREMENT yerine SERIAL kullanıyoruz
+	// DATETIME yerine TIMESTAMP kullanıyoruz
+
+	queryLogs := `CREATE TABLE IF NOT EXISTS logs (
+        id SERIAL PRIMARY KEY,
+        target TEXT,
+        status INTEGER,
+        latency TEXT,
+        agent TEXT,
+        created_at TIMESTAMP,
+        cpu REAL,
+        ram REAL,
+        disk REAL
+    );`
+
+	queryTargets := `CREATE TABLE IF NOT EXISTS targets (
+        id SERIAL PRIMARY KEY,
+        agent_name TEXT,
+        target_url TEXT
+    );`
+
+	if _, err := db.Exec(queryLogs); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := db.Exec(queryTargets); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("🐘 PostgreSQL Bağlantısı Hazır.")
 }
 
 func startTaskScheduler() {
