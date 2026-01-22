@@ -45,7 +45,7 @@ type TargetTask struct {
 func initDB() {
 	var err error
 	// Ortam değişkenlerinden bilgileri al, yoksa varsayılanı kullan
-	connStr := "postgres://sentinel:gizlisifre@sentineld-db:5432/sentineldb?sslmode=disable"
+	connStr := "postgres://sentinel:Cagri1183@sentineld-db:5432/sentineldb?sslmode=disable"
 
 	// Eğer docker run -e DB_URL="..." ile verirsek onu kullanırız
 	if os.Getenv("DATABASE_URL") != "" {
