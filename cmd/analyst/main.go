@@ -14,8 +14,8 @@ import (
 var db *sql.DB
 
 type AnalyticsData struct {
-	Label string  `json:"label"` // 2024-01-20 14:00 gibi
-	Value float64 `json:"value"` // Ortalama Gecikme
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
 }
 
 type TableRow struct {
@@ -28,46 +28,35 @@ type TableRow struct {
 
 func initDB() {
 	var err error
-
-	// HATALI OLAN KISIM BURASIYDI, DÜZELTİLDİ:
-	// Varsayılan bağlantı cümlesi (Docker içindeki isimle)
-	connStr := "postgres://sentinel:Cagri1183@sentineld-db:5432/sentineldb?sslmode=disable"
-
-	// Eğer environment variable ile gelirse onu kullan (Production için)
+	connStr := "postgres://sentinel:gizlisifre@sentineld-db:5432/sentineldb?sslmode=disable"
 	if val := os.Getenv("DATABASE_URL"); val != "" {
 		connStr = val
 	}
 
-	// Sürücü adı artık "postgres"
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	if err = db.Ping(); err != nil {
-		log.Fatal("Analyst DB'ye ulaşamadı:", err)
+		log.Fatal("Analyst DB Erişim Hatası:", err)
 	}
-
-	fmt.Println("📊 Analyst, PostgreSQL veritabanına bağlandı.")
+	fmt.Println("📊 Analyst: PostgreSQL Veritabanı Hazır.")
 }
 
-// Grafik Verisi (Saatlik veya Günlük Gruplama)
 func handleChartData(w http.ResponseWriter, r *http.Request) {
 	mode := r.URL.Query().Get("mode")
 	agent := r.URL.Query().Get("agent")
 
 	var query string
-	// POSTGRES TARİH FONKSİYONU: to_char
 	if mode == "day" {
 		query = `SELECT to_char(created_at, 'YYYY-MM-DD') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
-                 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
+				 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
 	} else {
-		// Saatlik
 		query = `SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
-                 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
+				 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
 	}
 
-	// SQLite '?' kullanır, Postgres '$1' kullanır.
 	searchAgent := "%"
 	if agent != "" {
 		searchAgent = agent
@@ -86,7 +75,6 @@ func handleChartData(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&d.Label, &d.Value)
 		data = append(data, d)
 	}
-
 	if data == nil {
 		data = []AnalyticsData{}
 	}
@@ -95,14 +83,12 @@ func handleChartData(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// Tablo Verisi (Tableau Tarzı Özet)
 func handleTableData(w http.ResponseWriter, r *http.Request) {
-	// Son 24 saatin özeti
 	query := `
 		SELECT 
 			target,
-			AVG(CAST(replace(latency, 'ms', '') AS INTEGER)) as avg_ping,
-			MAX(CAST(replace(latency, 'ms', '') AS INTEGER)) as max_ping,
+			AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as avg_ping,
+			MAX(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as max_ping,
 			SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) as success,
 			SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END) as fail
 		FROM logs
@@ -150,10 +136,6 @@ func main() {
 	http.HandleFunc("/api/chart", handleChartData)
 	http.HandleFunc("/api/table", handleTableData)
 	http.HandleFunc("/api/agents", handleAgents)
-
-	// Arayüz dosyalarını sun
 	http.Handle("/", http.FileServer(http.Dir("./web/analyst")))
-
-	fmt.Println("📊 Sentinel Analyst 3000 portunda çalışıyor...")
 	log.Fatal(http.ListenAndServe(":3000", nil))
 }
