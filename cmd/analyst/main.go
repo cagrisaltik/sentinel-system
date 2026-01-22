@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	_ "github.com/lib/pq"
 )
@@ -27,11 +28,27 @@ type TableRow struct {
 
 func initDB() {
 	var err error
-	// _journal_mode=WAL çok önemli! İki uygulama aynı anda dosyayı okuyabilsin diye.
-	db, err = sql.Open("sqlite", "/root/sentinel.db?_journal_mode=WAL")
+
+	// HATALI OLAN KISIM BURASIYDI, DÜZELTİLDİ:
+	// Varsayılan bağlantı cümlesi (Docker içindeki isimle)
+	connStr := "postgres://sentinel:[REDACTED]@sentineld-db:5432/sentineldb?sslmode=disable"
+
+	// Eğer environment variable ile gelirse onu kullan (Production için)
+	if val := os.Getenv("DATABASE_URL"); val != "" {
+		connStr = val
+	}
+
+	// Sürücü adı artık "postgres"
+	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if err = db.Ping(); err != nil {
+		log.Fatal("Analyst DB'ye ulaşamadı:", err)
+	}
+
+	fmt.Println("📊 Analyst, PostgreSQL veritabanına bağlandı.")
 }
 
 // Grafik Verisi (Saatlik veya Günlük Gruplama)
