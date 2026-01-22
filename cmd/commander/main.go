@@ -395,6 +395,6 @@ func main() {
 	http.HandleFunc("/api/targets", handleTargets)
 	http.HandleFunc("/api/export", handleExport) // YENİ: Excel İndirme Linki
 	http.HandleFunc("/api/agents", handleActiveAgents)
-	http.Handle("/", http.FileServer(http.Dir("./web")))
+	http.Handle("/", http.FileServer(http.Dir("./web/commander")))
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
