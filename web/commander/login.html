@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL | Secure Access</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #06b6d4; /* Cyan Neon */
+            --bg-dark: #020617;
+            --glass: rgba(30, 41, 59, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            margin: 0;
+            height: 100vh;
+            background-color: var(--bg-dark);
+            color: white;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* --- ARKA PLAN EFEKTLERİ (CYBER GRID) --- */
+        .background-grid {
+            position: absolute;
+            width: 200%;
+            height: 200%;
+            background-image: 
+                linear-gradient(rgba(6, 182, 212, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(6, 182, 212, 0.1) 1px, transparent 1px);
+            background-size: 40px 40px;
+            transform: perspective(500px) rotateX(60deg) translateY(-100px) translateZ(-200px);
+            animation: gridMove 20s linear infinite;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .scanline {
+            width: 100%;
+            height: 100px;
+            z-index: 1;
+            background: linear-gradient(0deg, rgba(0,0,0,0) 0%, rgba(6, 182, 212, 0.1) 50%, rgba(0,0,0,0) 100%);
+            opacity: 0.1;
+            position: absolute;
+            bottom: 100%;
+            animation: scanline 10s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes gridMove {
+            0% { transform: perspective(500px) rotateX(60deg) translateY(0) translateZ(-200px); }
+            100% { transform: perspective(500px) rotateX(60deg) translateY(40px) translateZ(-200px); }
+        }
+
+        @keyframes scanline {
+            0% { bottom: 100%; }
+            100% { bottom: -100px; }
+        }
+
+        /* --- LOGİN KUTUSU (GLASSMORPHISM) --- */
+        .login-container {
+            position: relative;
+            z-index: 10;
+            width: 380px;
+            padding: 40px;
+            background: var(--glass);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .brand {
+            margin-bottom: 30px;
+        }
+
+        .brand i {
+            font-size: 48px;
+            background: linear-gradient(135deg, #22d3ee 0%, #3b82f6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .brand h1 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            margin: 0;
+            color: white;
+            text-transform: uppercase;
+        }
+        
+        .brand span {
+            font-size: 12px;
+            color: #94a3b8;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        /* --- INPUT ALANLARI --- */
+        .input-group {
+            position: relative;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .input-group i {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #64748b;
+            transition: 0.3s;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 14px 14px 14px 45px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            box-sizing: border-box;
+            transition: 0.3s;
+            outline: none;
+        }
+
+        .input-group input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.3);
+            background: rgba(15, 23, 42, 0.9);
+        }
+
+        .input-group input:focus + i {
+            color: var(--primary);
+        }
+
+        /* --- BUTON --- */
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(6, 182, 212, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        /* --- HATA MESAJI --- */
+        .error-msg {
+            background: rgba(220, 38, 38, 0.2);
+            color: #f87171;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            margin-top: 20px;
+            display: none;
+            border: 1px solid rgba(220, 38, 38, 0.3);
+            animation: shake 0.4s ease-in-out;
+        }
+
+        /* --- FOOTER --- */
+        .footer {
+            margin-top: 30px;
+            font-size: 11px;
+            color: #475569;
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="background-grid"></div>
+    <div class="scanline"></div>
+
+    <div class="login-container">
+        <div class="brand">
+            <i class="fa-solid fa-shield-halved"></i>
+            <h1>Sentinel</h1>
+            <span>System Command Center</span>
+        </div>
+
+        <form id="loginForm">
+            <div class="input-group">
+                <input type="text" id="username" placeholder="Operator ID" required autocomplete="off">
+                <i class="fa-solid fa-user-astronaut"></i>
+            </div>
+            
+            <div class="input-group">
+                <input type="password" id="password" placeholder="Access Code" required>
+                <i class="fa-solid fa-key"></i>
+            </div>
+
+            <button type="submit">
+                Initialize Session <i class="fa-solid fa-arrow-right" style="margin-left:8px;"></i>
+            </button>
+        </form>
+
+        <div id="errorMsg" class="error-msg">
+            <i class="fa-solid fa-triangle-exclamation"></i> Access Denied: Invalid Credentials
+        </div>
+
+        <div class="footer">
+            SECURE CONNECTION ESTABLISHED v2.4.0
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // Butona yükleniyor efekti verelim
+            const btn = document.querySelector('button');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> AUTHENTICATING...';
+            btn.disabled = true;
+
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    body: JSON.stringify({ username: u, password: p })
+                });
+
+                if (res.ok) {
+                    // Başarılıysa yeşil olsun
+                    btn.style.background = '#16a34a';
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> ACCESS GRANTED';
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 800);
+                } else {
+                    throw new Error("Login failed");
+                }
+            } catch (err) {
+                // Hata mesajı göster
+                document.getElementById('errorMsg').style.display = 'block';
+                // Butonu eski haline getir
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                btn.style.background = ''; // Gradient'e döner
+            }
+        });
+
+        // Inputlara tıklandığında hata mesajını gizle
+        document.querySelectorAll('input').forEach(i => {
+            i.addEventListener('focus', () => {
+                document.getElementById('errorMsg').style.display = 'none';
+            });
+        });
+    </script>
+</body>
+</html>
