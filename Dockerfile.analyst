@@ -1,13 +1,27 @@
 FROM golang:1.23-alpine AS builder
+
 WORKDIR /app
+
+# 1. GEREKLİ SİSTEM ARAÇLARINI YÜKLE (FIX)
+# Git ve SSL sertifikaları olmadan 'go mod download' bazen hata verir.
+RUN apk add --no-cache git ca-certificates
+
+# 2. Modül dosyalarını kopyala
 COPY go.mod go.sum ./
+
+# 3. Proxy ayarlarını zorla (Bağlantı hatalarını azaltır)
+ENV GOPROXY=https://proxy.golang.org,direct
+
+# 4. Kütüphaneleri indir
 RUN go mod download
+
+# 5. Kaynak kodları kopyala ve derle
 COPY . .
 RUN go build -o analyst cmd/analyst/main.go
 
+# --- Final Sahnesi ---
 FROM alpine:latest
 WORKDIR /root/
-# Web arayüzü dosyalarını kopyalamayı unutma!
 COPY --from=builder /app/web ./web 
 COPY --from=builder /app/analyst .
 CMD ["./analyst"]
