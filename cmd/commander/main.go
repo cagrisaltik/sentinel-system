@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
+	"github.com/google/uuid" //Rastgele ve benzersiz token için
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"         // PostgreSQL Driver
 	"github.com/xuri/excelize/v2" // Excel Export
@@ -153,33 +154,40 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var creds LoginRequest
 	err := json.NewDecoder(r.Body).Decode(&creds)
 	if err != nil {
-		http.Error(w, "Geçersiz istek", http.StatusBadRequest)
+		http.Error(w, "Geçersiz veri", http.StatusBadRequest)
 		return
 	}
 
 	var storedHash string
 	err = db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
 	if err != nil {
-		http.Error(w, "Kullanıcı veya şifre hatalı", http.StatusUnauthorized)
+		// Güvenlik İpucu: "Kullanıcı bulunamadı" demek yerine genel hata verilir ki hacker kullanıcı adını doğrulayamasın.
+		time.Sleep(1 * time.Second) // Timing Attack önlemi (Cevabı bilerek geciktiriyoruz)
+		http.Error(w, "Giriş başarısız", http.StatusUnauthorized)
 		return
 	}
 
-	// Şifreyi Doğrula
 	err = bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password))
 	if err != nil {
-		http.Error(w, "Kullanıcı veya şifre hatalı", http.StatusUnauthorized)
+		time.Sleep(1 * time.Second) // Şifre denemesini yavaşlat
+		http.Error(w, "Giriş başarısız", http.StatusUnauthorized)
 		return
 	}
 
-	// Session Oluştur
-	sessionToken := fmt.Sprintf("%d", time.Now().UnixNano())
+	// 1. GÜVENLİK GÜNCELLEMESİ: UUID Kullan (Tahmin edilemez)
+	sessionToken := uuid.New().String()
 	sessions[sessionToken] = creds.Username
 
+	// 2. GÜVENLİK GÜNCELLEMESİ: Secure Cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:    "session_token",
 		Value:   sessionToken,
 		Expires: time.Now().Add(24 * time.Hour),
 		Path:    "/",
+		// Bu ikisi ÇOK ÖNEMLİ:
+		HttpOnly: true,                    // Javascript bu çerezi okuyamaz (XSS koruması)
+		SameSite: http.SameSiteStrictMode, // Başka siteden gelen istekte çerez gitmez (CSRF koruması)
+		// Secure: true,                 // Sadece HTTPS'de çalışır (Localhost testinde false kalsın, sunucuda true yapmalısın)
 	})
 	w.WriteHeader(http.StatusOK)
 }
@@ -228,6 +236,7 @@ func startTaskScheduler() {
 
 func handleTargets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
 	if r.Method == "GET" {
 		rows, _ := db.Query("SELECT id, agent_name, target_url FROM targets")
 		defer rows.Close()
@@ -241,14 +250,53 @@ func handleTargets(w http.ResponseWriter, r *http.Request) {
 			tasks = []TargetTask{}
 		}
 		json.NewEncoder(w).Encode(tasks)
+
 	} else if r.Method == "POST" {
 		var t TargetTask
-		json.NewDecoder(r.Body).Decode(&t)
-		db.Exec("INSERT INTO targets (agent_name, target_url) VALUES ($1, $2)", t.AgentName, t.TargetURL)
+		err := json.NewDecoder(r.Body).Decode(&t)
+		if err != nil {
+			http.Error(w, "Geçersiz veri formatı", http.StatusBadRequest)
+			return
+		}
+
+		// --- GÜVENLİK KONTROLLERİ (XSS & VALIDATION) ---
+
+		// 1. Boş Alan Kontrolü
+		if strings.TrimSpace(t.AgentName) == "" || strings.TrimSpace(t.TargetURL) == "" {
+			http.Error(w, "Ajan adı ve Hedef URL boş olamaz", http.StatusBadRequest)
+			return
+		}
+
+		// 2. XSS Koruması (HTML Taglerini Yasakla)
+		// Eğer URL içinde < veya > varsa reddet.
+		if strings.Contains(t.TargetURL, "<") || strings.Contains(t.TargetURL, ">") ||
+			strings.Contains(t.AgentName, "<") || strings.Contains(t.AgentName, ">") {
+			http.Error(w, "Güvenlik Uyarısı: HTML karakterleri (<, >) kullanılamaz!", http.StatusBadRequest)
+			return
+		}
+		// ------------------------------------------------
+
+		// Veritabanına Kayıt (PostgreSQL $1, $2 kullanarak SQL Injection'ı zaten engelliyoruz)
+		_, err = db.Exec("INSERT INTO targets (agent_name, target_url) VALUES ($1, $2)", t.AgentName, t.TargetURL)
+		if err != nil {
+			http.Error(w, "Veritabanı hatası", http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
+
 	} else if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
-		db.Exec("DELETE FROM targets WHERE id = $1", id)
+		if id == "" {
+			http.Error(w, "ID gerekli", http.StatusBadRequest)
+			return
+		}
+
+		// ID'ye göre sil ($1 parametresi ile)
+		_, err := db.Exec("DELETE FROM targets WHERE id = $1", id)
+		if err != nil {
+			http.Error(w, "Silme işlemi başarısız", http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -405,7 +453,24 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- WEBSOCKET ---
-var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		// Sadece kendi sunucumuzdan (localhost veya sunucu IP'si) gelen isteklere izin ver
+		origin := r.Header.Get("Origin")
+
+		// Geliştirme ortamı (Localhost) için izin ver
+		if strings.Contains(origin, "localhost") || strings.Contains(origin, "127.0.0.1") {
+			return true
+		}
+
+		// PROD: Sunucunun IP adresini veya Domainini buraya yazmalısın!
+		// Örn: if strings.Contains(origin, "192.168.1.50") { return true }
+
+		// Şimdilik test için true bırakıyoruz ama riskli olduğunu bil!
+		// Doğrusu yukarıdaki gibi IP kontrolü yapmaktır.
+		return true
+	},
+}
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -428,6 +493,13 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if msg.Type == "REGISTER" {
+			// Güvenlik: Ajan Adı Kontrolü
+			if strings.Contains(msg.Agent, "<") || strings.Contains(msg.Agent, ">") {
+				fmt.Println("⚠️ SALDIRI TESPİTİ: Ajan adında illegal karakterler!")
+				ws.Close()
+				break
+			}
+
 			currentAgentName = msg.Agent
 			clientsMu.Lock()
 			clients[currentAgentName] = ws
@@ -436,8 +508,21 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if msg.Type == "RAPOR" {
+			// --- DÜZELTME BURADA YAPILDI ---
+
+			// 1. Target Temizliği
+			cleanTarget := strings.ReplaceAll(msg.Target, "<", "")
+			cleanTarget = strings.ReplaceAll(cleanTarget, ">", "")
+
+			// 2. Latency (Time) Temizliği
+			// DİKKAT: Burada 'msg.Latency' yerine 'msg.Time' kullanıyoruz!
+			cleanLatency := strings.ReplaceAll(msg.Time, "<", "")
+			cleanLatency = strings.ReplaceAll(cleanLatency, ">", "")
+
+			// -------------------------------
+
 			_, err := db.Exec("INSERT INTO logs (target, status, latency, agent, created_at, cpu, ram, disk) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now(), msg.CPU, msg.RAM, msg.Disk)
+				cleanTarget, msg.Status, cleanLatency, msg.Agent, time.Now(), msg.CPU, msg.RAM, msg.Disk)
 			if err != nil {
 				fmt.Println("Log Insert Error:", err)
 			}
