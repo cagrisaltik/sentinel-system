@@ -8,23 +8,25 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings" // String işlemleri için gerekli
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"         // PostgreSQL sürücüsü
-	"github.com/xuri/excelize/v2" // Excel kütüphanesi
+	_ "github.com/lib/pq"         // PostgreSQL Driver
+	"github.com/xuri/excelize/v2" // Excel Export
+	"golang.org/x/crypto/bcrypt"  // Şifre Hashleme
 )
 
 var db *sql.DB
 var (
 	clients   = make(map[string]*websocket.Conn)
 	clientsMu sync.Mutex
+	sessions  = make(map[string]string) // SessionToken -> Username (Basit Session Yönetimi)
 )
 
-// Modeller
+// --- MODELLER ---
 type LogEntry struct {
 	ID        int     `json:"id"`
 	Target    string  `json:"target"`
@@ -36,16 +38,25 @@ type LogEntry struct {
 	RAM       float64 `json:"ram"`
 	Disk      float64 `json:"disk"`
 }
+
 type TargetTask struct {
 	ID        int    `json:"id"`
 	AgentName string `json:"agent_name"`
 	TargetURL string `json:"target_url"`
 }
 
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// --- VERİTABANI BAŞLATMA ---
 func initDB() {
 	var err error
-	// Varsayılan bağlantı
+	// Varsayılan bağlantı (Docker içi)
 	connStr := "postgres://sentinel:[REDACTED]@sentineld-db:5432/sentineldb?sslmode=disable"
+
+	// Eğer Environment'tan gelirse onu kullan
 	if val := os.Getenv("DATABASE_URL"); val != "" {
 		connStr = val
 	}
@@ -56,11 +67,11 @@ func initDB() {
 	}
 
 	if err = db.Ping(); err != nil {
-		log.Fatal("Commander DB Erişim Hatası:", err)
+		log.Fatal("DB Erişim Hatası:", err)
 	}
 
-	// Tabloları oluştur (PostgreSQL Syntax)
-	queryLogs := `CREATE TABLE IF NOT EXISTS logs (
+	// 1. Log Tablosu
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS logs (
 		id SERIAL PRIMARY KEY,
 		target TEXT,
 		status INTEGER,
@@ -68,23 +79,126 @@ func initDB() {
 		agent TEXT,
 		created_at TIMESTAMP,
 		cpu REAL, ram REAL, disk REAL
-	);`
-	queryTargets := `CREATE TABLE IF NOT EXISTS targets (
+	);`)
+	if err != nil {
+		log.Println("Logs tablosu hatası:", err)
+	}
+
+	// 2. Hedefler Tablosu
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS targets (
 		id SERIAL PRIMARY KEY,
 		agent_name TEXT,
 		target_url TEXT
-	);`
-
-	if _, err := db.Exec(queryLogs); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := db.Exec(queryTargets); err != nil {
-		log.Fatal(err)
+	);`)
+	if err != nil {
+		log.Println("Targets tablosu hatası:", err)
 	}
 
-	fmt.Println("🐘 Commander: PostgreSQL Veritabanı Hazır.")
+	// 3. Kullanıcılar Tablosu (Şifreli)
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id SERIAL PRIMARY KEY,
+		username TEXT UNIQUE NOT NULL,
+		password_hash TEXT NOT NULL
+	);`)
+	if err != nil {
+		log.Fatal("Users tablosu oluşturulamadı:", err)
+	}
+
+	// 4. Varsayılan Kullanıcı (admin / [REDACTED]) Kontrolü
+	var userCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount)
+	if err == nil && userCount == 0 {
+		defaultUser := "admin"
+		defaultPass := "[REDACTED]" // Varsayılan şifre
+		hash, _ := bcrypt.GenerateFromPassword([]byte(defaultPass), bcrypt.DefaultCost)
+
+		_, err := db.Exec("INSERT INTO users (username, password_hash) VALUES ($1, $2)", defaultUser, string(hash))
+		if err != nil {
+			log.Println("Default user oluşturulamadı:", err)
+		} else {
+			fmt.Println("🔑 İlk Kullanıcı Oluşturuldu: admin / [REDACTED]")
+		}
+	}
+
+	fmt.Println("🐘 Commander: PostgreSQL Veritabanı ve Auth Sistemi Hazır.")
 }
 
+// --- GÜVENLİK KATMANI (MIDDLEWARE) ---
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Public endpointlere izin ver
+		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" {
+			next(w, r)
+			return
+		}
+
+		c, err := r.Cookie("session_token")
+		if err != nil {
+			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+			return
+		}
+
+		// Session geçerli mi?
+		if _, ok := sessions[c.Value]; !ok {
+			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+// --- LOGIN HANDLERS ---
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var creds LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&creds)
+	if err != nil {
+		http.Error(w, "Geçersiz istek", http.StatusBadRequest)
+		return
+	}
+
+	var storedHash string
+	err = db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
+	if err != nil {
+		http.Error(w, "Kullanıcı veya şifre hatalı", http.StatusUnauthorized)
+		return
+	}
+
+	// Şifreyi Doğrula
+	err = bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password))
+	if err != nil {
+		http.Error(w, "Kullanıcı veya şifre hatalı", http.StatusUnauthorized)
+		return
+	}
+
+	// Session Oluştur
+	sessionToken := fmt.Sprintf("%d", time.Now().UnixNano())
+	sessions[sessionToken] = creds.Username
+
+	http.SetCookie(w, &http.Cookie{
+		Name:    "session_token",
+		Value:   sessionToken,
+		Expires: time.Now().Add(24 * time.Hour),
+		Path:    "/",
+	})
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("session_token")
+	if err == nil {
+		delete(sessions, c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:    "session_token",
+		Value:   "",
+		Expires: time.Now(),
+		Path:    "/",
+	})
+	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+}
+
+// --- GÖREV ZAMANLAYICI ---
 func startTaskScheduler() {
 	ticker := time.NewTicker(5 * time.Second)
 	go func() {
@@ -96,9 +210,11 @@ func startTaskScheduler() {
 			for rows.Next() {
 				var agentName, targetUrl string
 				rows.Scan(&agentName, &targetUrl)
+
 				clientsMu.Lock()
 				conn, exists := clients[agentName]
 				clientsMu.Unlock()
+
 				if exists {
 					conn.WriteJSON(models.Command{Type: "PING_ISTEGI", Target: targetUrl})
 				}
@@ -107,6 +223,8 @@ func startTaskScheduler() {
 		}
 	}()
 }
+
+// --- API ENDPOINTLERİ ---
 
 func handleTargets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -126,12 +244,10 @@ func handleTargets(w http.ResponseWriter, r *http.Request) {
 	} else if r.Method == "POST" {
 		var t TargetTask
 		json.NewDecoder(r.Body).Decode(&t)
-		// PostgreSQL: $1, $2
 		db.Exec("INSERT INTO targets (agent_name, target_url) VALUES ($1, $2)", t.AgentName, t.TargetURL)
 		w.WriteHeader(http.StatusCreated)
 	} else if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
-		// PostgreSQL: $1
 		db.Exec("DELETE FROM targets WHERE id = $1", id)
 		w.WriteHeader(http.StatusOK)
 	}
@@ -148,7 +264,6 @@ func getHistory(w http.ResponseWriter, r *http.Request) {
 	if hoursStr != "" {
 		hours, _ := strconv.Atoi(hoursStr)
 		cutoff := time.Now().Add(time.Duration(-hours) * time.Hour)
-		// PostgreSQL: $1
 		rows, err = db.Query(queryBase+` WHERE created_at >= $1 ORDER BY id DESC`, cutoff)
 	} else {
 		rows, err = db.Query(queryBase + ` ORDER BY id DESC LIMIT 200`)
@@ -174,7 +289,21 @@ func getHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-// --- RENKLİ EXCEL RAPORLAMA ---
+func handleActiveAgents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	var activeList []string
+	for name := range clients {
+		activeList = append(activeList, name)
+	}
+	if activeList == nil {
+		activeList = []string{}
+	}
+	json.NewEncoder(w).Encode(activeList)
+}
+
+// --- EXCEL EXPORT (RENKLİ) ---
 func handleExport(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query("SELECT id, target, status, latency, agent, created_at, cpu, ram, disk FROM logs ORDER BY id DESC LIMIT 1000")
 	if err != nil {
@@ -202,7 +331,6 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	goodStyle, _ := f.NewStyle(&excelize.Style{Font: &excelize.Font{Color: "#16A34A", Bold: true}, Alignment: &excelize.Alignment{Horizontal: "center"}})
 	warnStyle, _ := f.NewStyle(&excelize.Style{Font: &excelize.Font{Color: "#EA580C", Bold: true}, Alignment: &excelize.Alignment{Horizontal: "center"}})
 
-	// Başlıklar
 	f.MergeCell(sheetName, "A1", "I1")
 	f.SetCellValue(sheetName, "A1", "SENTINEL SİSTEM RAPORU")
 	f.SetCellStyle(sheetName, "A1", "I1", titleStyle)
@@ -236,10 +364,9 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 		f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), fmt.Sprintf("%.1f", ram))
 		f.SetCellValue(sheetName, fmt.Sprintf("I%d", rowIdx), fmt.Sprintf("%.1f", disk))
 
-		// Renklendirme
+		// Renklendirme ve Stillendirme
 		f.SetCellStyle(sheetName, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("I%d", rowIdx), centerStyle)
 
-		// Durum Kontrolü (Hata varsa Kırmızı)
 		statusCell := fmt.Sprintf("E%d", rowIdx)
 		if status == 200 {
 			f.SetCellStyle(sheetName, statusCell, statusCell, goodStyle)
@@ -247,7 +374,7 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 			f.SetCellStyle(sheetName, statusCell, statusCell, badStyle)
 		}
 
-		// Ping Kontrolü
+		// Latency Renklendirme
 		latStr := strings.TrimSuffix(latency, "ms")
 		latVal, _ := strconv.Atoi(latStr)
 		latCell := fmt.Sprintf("F%d", rowIdx)
@@ -259,7 +386,7 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 			f.SetCellStyle(sheetName, latCell, latCell, goodStyle)
 		}
 
-		// CPU Kontrolü
+		// CPU Renklendirme
 		cpuCell := fmt.Sprintf("G%d", rowIdx)
 		if cpu > 80.0 {
 			f.SetCellStyle(sheetName, cpuCell, cpuCell, badStyle)
@@ -268,7 +395,6 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 		rowIdx++
 	}
 
-	// Genişlikler
 	f.SetColWidth(sheetName, "B", "B", 20)
 	f.SetColWidth(sheetName, "C", "D", 25)
 
@@ -278,20 +404,7 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	f.WriteTo(w)
 }
 
-func handleActiveAgents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
-	var activeList []string
-	for name := range clients {
-		activeList = append(activeList, name)
-	}
-	if activeList == nil {
-		activeList = []string{}
-	}
-	json.NewEncoder(w).Encode(activeList)
-}
-
+// --- WEBSOCKET ---
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +413,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+
 	var currentAgentName string
 	for {
 		var msg models.Command
@@ -312,6 +426,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
+
 		if msg.Type == "REGISTER" {
 			currentAgentName = msg.Agent
 			clientsMu.Lock()
@@ -319,8 +434,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			clientsMu.Unlock()
 			fmt.Printf("🔵 Ajan Kayıt: %s\n", currentAgentName)
 		}
+
 		if msg.Type == "RAPOR" {
-			// PostgreSQL: $1...$8
 			_, err := db.Exec("INSERT INTO logs (target, status, latency, agent, created_at, cpu, ram, disk) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
 				msg.Target, msg.Status, msg.Time, msg.Agent, time.Now(), msg.CPU, msg.RAM, msg.Disk)
 			if err != nil {
@@ -330,14 +445,37 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- ANA FONKSİYON ---
 func main() {
 	initDB()
 	startTaskScheduler()
-	http.HandleFunc("/ws", handleConnections)
-	http.HandleFunc("/api/history", getHistory)
-	http.HandleFunc("/api/targets", handleTargets)
-	http.HandleFunc("/api/agents", handleActiveAgents)
-	http.HandleFunc("/api/export", handleExport)
-	http.Handle("/", http.FileServer(http.Dir("./web/commander")))
+
+	// Public Routes (Middleware YOK)
+	http.HandleFunc("/api/login", handleLogin)
+	http.HandleFunc("/api/logout", handleLogout)
+	http.HandleFunc("/ws", handleConnections) // Ajanlar auth olmadan bağlanıyor (şimdilik)
+
+	// Login Sayfasını Sunma
+	http.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./web/commander/login.html")
+	})
+
+	// Protected Routes (Middleware VAR)
+	http.HandleFunc("/api/history", authMiddleware(getHistory))
+	http.HandleFunc("/api/targets", authMiddleware(handleTargets))
+	http.HandleFunc("/api/agents", authMiddleware(handleActiveAgents))
+	http.HandleFunc("/api/export", authMiddleware(handleExport))
+
+	// Statik Dosyalar (Korumalı)
+	fs := http.FileServer(http.Dir("./web/commander"))
+	http.HandleFunc("/", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login.html" {
+			fs.ServeHTTP(w, r)
+			return
+		}
+		fs.ServeHTTP(w, r)
+	}))
+
+	fmt.Println("🔒 Commander: Güvenli Modda Başlatıldı (Port 8080)")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
