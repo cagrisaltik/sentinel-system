@@ -16,6 +16,7 @@ import (
 	"github.com/cagrisaltik/sentinel-system/internal/models"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/crypto/bcrypt"
@@ -62,7 +63,7 @@ func initDB() {
 	if connStr == "" {
 		// Fallback (Sadece geliştirme ortamı için)
 		log.Println("UYARI: DATABASE_URL ayarlanmamış, varsayılan değer kullanılıyor.")
-		connStr = "postgres://sentinel:gizlisifre@sentineld-db:5432/sentineldb?sslmode=disable"
+		connStr = "postgres://sentinel:Cagri1183@sentineld-db:5432/sentineldb?sslmode=disable"
 	}
 
 	db, err = sql.Open("postgres", connStr)
@@ -458,6 +459,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+
+	_ = godotenv.Load()
 	initDB()
 	startTaskScheduler()
 
