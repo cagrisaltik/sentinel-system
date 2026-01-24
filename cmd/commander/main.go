@@ -58,12 +58,13 @@ type LoginRequest struct {
 // --- VERİTABANI BAŞLATMA ---
 func initDB() {
 	var err error
-	// GÜVENLİK FİX: Hardcoded şifre kaldırıldı.
+	// GÜVENLİK FİX: Hardcoded şifre yerine Env öncelikli.
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
 		// Fallback (Sadece geliştirme ortamı için)
 		log.Println("UYARI: DATABASE_URL ayarlanmamış, varsayılan değer kullanılıyor.")
-		connStr = "postgres://sentinel:Cagri1183@sentineld-db:5432/sentineldb?sslmode=disable"
+		// Not: Localhost varsayılanı. Docker içindeysen ENV ile ezilmeli.
+		connStr = "postgres://sentinel:Cagri1183@localhost:5432/sentineldb?sslmode=disable"
 	}
 
 	db, err = sql.Open("postgres", connStr)
@@ -411,6 +412,26 @@ var upgrader = websocket.Upgrader{
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
+	// --- GÜVENLİK: Ajan Yetkilendirme (Secret Token) ---
+	// Bu blok eksik olduğu için ajanlar şifresiz bağlanabiliyordu.
+	// Şimdi bu kontrolü en başa ekledik.
+
+	requiredSecret := os.Getenv("AGENT_SECRET")
+	if requiredSecret == "" {
+		// Fallback (Güvenlik için uyarı ver)
+		fmt.Println("UYARI: AGENT_SECRET ayarlanmamış, varsayılan kullanılıyor.")
+		requiredSecret = "gizli-ajan-sifresi-123"
+	}
+
+	agentToken := r.Header.Get("X-Agent-Secret")
+
+	if agentToken != requiredSecret {
+		fmt.Printf("⛔ YETKİSİZ ERİŞİM: %s adresinden yanlış token ile bağlantı denemesi.\n", r.RemoteAddr)
+		http.Error(w, "Yetkisiz Erişim: Geçersiz Ajan Tokenı", http.StatusUnauthorized)
+		return
+	}
+	// ---------------------------------------------------
+
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -439,7 +460,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 			clientsMu.Lock()
 			clients[currentAgentName] = ws
 			clientsMu.Unlock()
-			fmt.Printf("🔵 Ajan: %s\n", currentAgentName)
+			fmt.Printf("🔵 Ajan: %s (Güvenli Bağlantı)\n", currentAgentName)
 		}
 
 		if msg.Type == "RAPOR" {
