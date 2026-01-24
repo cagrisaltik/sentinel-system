@@ -63,7 +63,7 @@
 
         // 2. GRID.JS TABLO KURULUMU
         const grid = new gridjs.Grid({
-            columns: ["Hedef", "Ort. Ping (ms)", "Max Ping", "Başarılı", "Hatalı"],
+            columns: ["Ajan","Hedef", "Ort. Ping (ms)", "Max Ping", "Başarılı", "Hatalı"],
             data: [],
             search: true,
             sort: true,
@@ -100,12 +100,13 @@
         }
 
         async function updateTable() {
+            const agent = document.getElementById('agentSelect').value;
             const res = await fetch('/api/table');
             const data = await res.json();
             
             // Grid.js güncelle
             grid.updateConfig({
-                data: data.map(d => [d.target, Math.round(d.avg_ping), d.max_ping, d.success, d.fail])
+                data: data.map(d => [d.agent, d.target, Math.round(d.avg_ping), d.max_ping, d.success, d.fail])
             }).forceRender();
         }
 

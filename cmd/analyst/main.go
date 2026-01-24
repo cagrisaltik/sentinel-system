@@ -19,6 +19,7 @@ type AnalyticsData struct {
 }
 
 type TableRow struct {
+	Agent   string  `json:"agent"`
 	Target  string  `json:"target"`
 	AvgPing float64 `json:"avg_ping"`
 	MaxPing int     `json:"max_ping"`
@@ -84,17 +85,28 @@ func handleChartData(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTableData(w http.ResponseWriter, r *http.Request) {
+	agent := r.URL.Query().Get("agent")
+	searchAgent := "%"
+	if agent != "" {
+		searchAgent = agent
+	}
+
+	// YENİ SORGU: Agent sütunu eklendi ve GROUP BY güncellendi
 	query := `
 		SELECT 
+			agent, 
 			target,
 			AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as avg_ping,
 			MAX(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as max_ping,
 			SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) as success,
 			SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END) as fail
 		FROM logs
-		GROUP BY target
+		WHERE agent LIKE $1
+		GROUP BY agent, target 
+		ORDER BY agent, target
 	`
-	rows, err := db.Query(query)
+
+	rows, err := db.Query(query, searchAgent)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -104,7 +116,8 @@ func handleTableData(w http.ResponseWriter, r *http.Request) {
 	var tableData []TableRow
 	for rows.Next() {
 		var t TableRow
-		rows.Scan(&t.Target, &t.AvgPing, &t.MaxPing, &t.Success, &t.Fail)
+		// Scan sırasına agent eklendi
+		rows.Scan(&t.Agent, &t.Target, &t.AvgPing, &t.MaxPing, &t.Success, &t.Fail)
 		tableData = append(tableData, t)
 	}
 	if tableData == nil {
