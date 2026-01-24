@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http" // Header eklemek için gerekli
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,14 +16,14 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
-// GÜVENLİK: Sadece geçerli Domain/IP (Command Injection Koruması)
+// GÜVENLİK: Command Injection Koruması (Sadece geçerli Domain/IP)
 var targetRegex = regexp.MustCompile(`^[a-zA-Z0-9.:_-]+$`)
 
 type Command struct {
 	Type   string  `json:"type"`
 	Target string  `json:"target"`
 	Status int     `json:"status"`
-	Time   string  `json:"time"` // Latency yerine Time (Commander ile uyumlu)
+	Time   string  `json:"time"`
 	Agent  string  `json:"agent"`
 	CPU    float64 `json:"cpu"`
 	RAM    float64 `json:"ram"`
@@ -45,6 +45,7 @@ func getSystemStats() (float64, float64, float64) {
 func main() {
 	serverHost := os.Getenv("SERVER_HOST")
 	agentName := os.Getenv("AGENT_NAME")
+	agentSecret := os.Getenv("AGENT_SECRET") // Şifreyi Env'den al
 
 	if serverHost == "" {
 		serverHost = "localhost:8080"
@@ -52,23 +53,28 @@ func main() {
 	if agentName == "" {
 		agentName = "Unknown-Agent"
 	}
+	// Şifre yoksa varsayılanı kullan (Test için)
+	if agentSecret == "" {
+		agentSecret = "gizli-ajan-sifresi-123"
+	}
 
 	u := fmt.Sprintf("ws://%s/ws", serverHost)
 	fmt.Printf("🔌 Bağlanıyor: %s (Agent: %s)\n", u, agentName)
 
 	for {
-		// --- GÜVENLİK DÜZELTMESİ BURADA ---
-		// Commander artık Origin kontrolü yapıyor.
-		// Biz de sahte bir "Origin" başlığı ekleyerek güvenlik kontrolünü geçiyoruz.
+		// --- GÜVENLİK HEADERLARI ---
 		headers := http.Header{}
+		// 1. Origin Kontrolü İçin
 		headers.Add("Origin", "http://localhost")
+		// 2. Kimlik Doğrulama (Secret Token) İçin
+		headers.Add("X-Agent-Secret", agentSecret)
+		// ---------------------------
 
 		dialer := websocket.Dialer{}
 		c, _, err := dialer.Dial(u, headers)
-		// ---------------------------------
 
 		if err != nil {
-			log.Println("Bağlantı hatası, 5sn sonra tekrar denenecek:", err)
+			log.Println("Bağlantı hatası (401 Yetkisiz olabilir), 5sn sonra tekrar denenecek:", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -77,7 +83,6 @@ func main() {
 		c.WriteJSON(Command{Type: "REGISTER", Agent: agentName})
 
 		// Komut Dinle
-		// Hata olduğunda fonksiyon dışına çıkıp yeniden bağlanması için label kullanımı
 		func() {
 			defer c.Close()
 			for {
@@ -93,7 +98,7 @@ func main() {
 
 					// Güvenlik: Hedef Kontrolü
 					if !targetRegex.MatchString(msg.Target) {
-						fmt.Println("⚠️ BLOKLANDI: Geçersiz Hedef Formatı ->", msg.Target)
+						fmt.Println("⚠️ BLOKLANDI: Geçersiz Hedef ->", msg.Target)
 						continue
 					}
 
@@ -116,7 +121,6 @@ func main() {
 
 					cpuUse, ramUse, diskUse := getSystemStats()
 
-					// Sonucu Raporla (Time alanını kullanıyoruz)
 					resp := Command{
 						Type:   "RAPOR",
 						Target: msg.Target,
@@ -131,7 +135,6 @@ func main() {
 				}
 			}
 		}()
-
-		time.Sleep(2 * time.Second) // Döngü çok hızlı dönmesin diye bekleme
+		time.Sleep(2 * time.Second)
 	}
 }
