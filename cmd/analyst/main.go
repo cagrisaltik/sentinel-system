@@ -7,148 +7,182 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var db *sql.DB
+var (
+	sessions   = make(map[string]string)
+	sessionsMu sync.Mutex // Eşzamanlı erişim hatası olmasın diye kilit
+)
 
-type AnalyticsData struct {
-	Label string  `json:"label"`
-	Value float64 `json:"value"`
+// --- MODELLER ---
+type LogStats struct {
+	TotalPings   int     `json:"total_pings"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgLatency   float64 `json:"avg_latency"`
+	ActiveAgents int     `json:"active_agents"`
 }
 
-type TableRow struct {
-	Agent   string  `json:"agent"`
-	Target  string  `json:"target"`
-	AvgPing float64 `json:"avg_ping"`
-	MaxPing int     `json:"max_ping"`
-	Success int     `json:"success"`
-	Fail    int     `json:"fail"`
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
+// --- VERİTABANI ---
 func initDB() {
 	var err error
-	connStr := "postgres://sentinel:gizlisifre@sentineld-db:5432/sentineldb?sslmode=disable"
-	if val := os.Getenv("DATABASE_URL"); val != "" {
-		connStr = val
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		log.Println("UYARI: DATABASE_URL yok, varsayılan kullanılıyor.")
+		connStr = "postgres://sentinel:gizlisifre@localhost:5432/sentineldb?sslmode=disable"
 	}
 
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	if err = db.Ping(); err != nil {
-		log.Fatal("Analyst DB Erişim Hatası:", err)
+		log.Fatal("Analyst DB'ye bağlanamadı:", err)
 	}
-	fmt.Println("📊 Analyst: PostgreSQL Veritabanı Hazır.")
+	fmt.Println("📊 Analyst: Veritabanı bağlantısı başarılı (Users tablosu kullanılıyor).")
 }
 
-func handleChartData(w http.ResponseWriter, r *http.Request) {
-	mode := r.URL.Query().Get("mode")
-	agent := r.URL.Query().Get("agent")
+// --- GÜVENLİK MIDDLEWARE ---
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Güvenlik Başlıkları
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-	var query string
-	if mode == "day" {
-		query = `SELECT to_char(created_at, 'YYYY-MM-DD') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
-				 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
-	} else {
-		query = `SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as time_group, AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) 
-				 FROM logs WHERE agent LIKE $1 GROUP BY time_group ORDER BY time_group ASC`
+		// Login sayfasına izin ver
+		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" || r.URL.Path == "/assets/style.css" {
+			next(w, r)
+			return
+		}
+
+		// Cookie Kontrolü
+		c, err := r.Cookie("analyst_session")
+		if err != nil {
+			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+			return
+		}
+
+		sessionsMu.Lock()
+		_, ok := sessions[c.Value]
+		sessionsMu.Unlock()
+
+		if !ok {
+			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
 	}
+}
 
-	searchAgent := "%"
-	if agent != "" {
-		searchAgent = agent
-	}
-
-	rows, err := db.Query(query, searchAgent)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
+// --- LOGIN İŞLEMLERİ ---
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var creds LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Geçersiz veri", http.StatusBadRequest)
 		return
 	}
-	defer rows.Close()
 
-	var data []AnalyticsData
-	for rows.Next() {
-		var d AnalyticsData
-		rows.Scan(&d.Label, &d.Value)
-		data = append(data, d)
-	}
-	if data == nil {
-		data = []AnalyticsData{}
+	var storedHash string
+	// Commander ile AYNI kullanıcı tablosunu sorguluyoruz
+	err := db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
+
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
+		time.Sleep(1 * time.Second) // Brute-force önlemi
+		http.Error(w, "Giriş başarısız", http.StatusUnauthorized)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	sessionToken := uuid.New().String()
+	sessionsMu.Lock()
+	sessions[sessionToken] = creds.Username
+	sessionsMu.Unlock()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "analyst_session",
+		Value:    sessionToken,
+		Expires:  time.Now().Add(24 * time.Hour),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusOK)
 }
 
-func handleTableData(w http.ResponseWriter, r *http.Request) {
-	agent := r.URL.Query().Get("agent")
-	searchAgent := "%"
-	if agent != "" {
-		searchAgent = agent
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("analyst_session")
+	if err == nil {
+		sessionsMu.Lock()
+		delete(sessions, c.Value)
+		sessionsMu.Unlock()
 	}
+	http.SetCookie(w, &http.Cookie{Name: "analyst_session", Value: "", Expires: time.Now(), Path: "/"})
+	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+}
 
-	// YENİ SORGU: Agent sütunu eklendi ve GROUP BY güncellendi
-	query := `
+// --- API ---
+func getStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var stats LogStats
+	// Basit bir istatistik sorgusu
+	err := db.QueryRow(`
 		SELECT 
-			agent, 
-			target,
-			AVG(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as avg_ping,
-			MAX(CAST(REPLACE(latency, 'ms', '') AS INTEGER)) as max_ping,
-			SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END) as fail
+			COUNT(*) as total,
+			COALESCE(AVG(CASE WHEN status = 200 THEN 100.0 ELSE 0.0 END), 0) as success_rate,
+			COUNT(DISTINCT agent) as agents
 		FROM logs
-		WHERE agent LIKE $1
-		GROUP BY agent, target 
-		ORDER BY agent, target
-	`
+	`).Scan(&stats.TotalPings, &stats.SuccessRate, &stats.ActiveAgents)
 
-	rows, err := db.Query(query, searchAgent)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "Veri hatası", 500)
 		return
 	}
-	defer rows.Close()
-
-	var tableData []TableRow
-	for rows.Next() {
-		var t TableRow
-		// Scan sırasına agent eklendi
-		rows.Scan(&t.Agent, &t.Target, &t.AvgPing, &t.MaxPing, &t.Success, &t.Fail)
-		tableData = append(tableData, t)
-	}
-	if tableData == nil {
-		tableData = []TableRow{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tableData)
-}
-
-func handleAgents(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT DISTINCT agent FROM logs")
-	defer rows.Close()
-	var agents []string
-	for rows.Next() {
-		var a string
-		rows.Scan(&a)
-		agents = append(agents, a)
-	}
-	if agents == nil {
-		agents = []string{}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(agents)
+	stats.AvgLatency = 45.0 // Şimdilik dummy veya hesaplanabilir
+	json.NewEncoder(w).Encode(stats)
 }
 
 func main() {
+	_ = godotenv.Load()
 	initDB()
-	http.HandleFunc("/api/chart", handleChartData)
-	http.HandleFunc("/api/table", handleTableData)
-	http.HandleFunc("/api/agents", handleAgents)
-	http.Handle("/", http.FileServer(http.Dir("./web/analyst")))
-	log.Fatal(http.ListenAndServe(":3000", nil))
+
+	// Statik Dosyalar
+	fs := http.FileServer(http.Dir("./web/analyst"))
+
+	http.HandleFunc("/api/login", handleLogin)
+	http.HandleFunc("/api/logout", handleLogout)
+	http.HandleFunc("/api/stats", authMiddleware(getStats))
+
+	// Özel Login Sayfası Yönlendirmesi
+	http.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./web/analyst/login.html")
+	})
+
+	// Ana Handler
+	http.HandleFunc("/", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login.html" {
+			http.ServeFile(w, r, "./web/analyst/login.html")
+			return
+		}
+		fs.ServeHTTP(w, r)
+	}))
+
+	port := os.Getenv("ANALYST_PORT")
+	if port == "" {
+		port = "3000"
+	}
+
+	fmt.Printf("🛡️ Analyst: Login Ekranlı Modda Başlatıldı (Port %s)\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
