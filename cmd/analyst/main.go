@@ -32,7 +32,7 @@ type TableData struct {
 	Agent   string  `json:"agent"`
 	Target  string  `json:"target"`
 	AvgPing float64 `json:"avg_ping"`
-	MaxPing int     `json:"max_ping"`
+	MaxPing float64 `json:"max_ping"` // Text -> Float çevrimi için güncellendi
 	Success int     `json:"success"`
 	Fail    int     `json:"fail"`
 }
@@ -42,7 +42,7 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// --- DB BAŞLATMA ---
+// --- DB BAĞLANTISI ---
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
@@ -55,16 +55,15 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// Retry Logic (DB hazır olana kadar bekle)
 	for i := 0; i < 10; i++ {
 		if err = db.Ping(); err == nil {
-			fmt.Println("📊 Analyst: Veritabanı bağlantısı BAŞARILI.")
+			fmt.Println("✅ Analyst: Veritabanı bağlantısı BAŞARILI.")
 			return
 		}
 		fmt.Println("⏳ DB bekleniyor...", err)
 		time.Sleep(2 * time.Second)
 	}
-	log.Fatal("DB Bağlantı Hatası:", err)
+	log.Fatal("❌ DB Bağlantı Hatası:", err)
 }
 
 // --- GÜVENLİK ---
@@ -125,13 +124,12 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-// --- DÜZELTİLEN SQL SORGULARI ---
+// --- DÜZELTİLMİŞ SQL SORGULARI ---
 
 func handleAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	rows, err := db.Query(`SELECT DISTINCT agent FROM logs ORDER BY agent`)
 	if err != nil {
-		// Eğer tablo henüz boşsa veya hata varsa boş liste dön
 		log.Println("SQL Hatası (Agents):", err)
 		json.NewEncoder(w).Encode([]string{})
 		return
@@ -158,10 +156,12 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 		timeFormat = "YYYY-MM-DD"
 	}
 
-	// DÜZELTME: "timestamp" kolonunu tırnak içine aldık ve CAST işlemi yaptık.
-	// Postgres'te timestamp kelimesi özel olduğu için "timestamp" şeklinde yazılmalı.
+	// DÜZELTME: 'timestamp' yerine 'created_at' kullanıldı.
+	// DÜZELTME: Latency TEXT olduğu için sayıya (NUMERIC) çevrildi.
 	baseQuery := fmt.Sprintf(`
-		SELECT to_char("timestamp"::timestamp, '%s') as label, AVG(latency) as val 
+		SELECT 
+			to_char(created_at, '%s') as label, 
+			AVG(CAST(latency AS NUMERIC)) as val 
 		FROM logs 
 		WHERE 1=1 `, timeFormat)
 
@@ -178,7 +178,6 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Println("SQL Hatası (Chart):", err)
-		// Frontend JSON hatası almasın diye boş veri dönüyoruz
 		json.NewEncoder(w).Encode([]ChartData{})
 		return
 	}
@@ -201,12 +200,13 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 func handleTable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// DÜZELTME: Latency TEXT -> NUMERIC dönüşümü yapıldı
 	rows, err := db.Query(`
 		SELECT 
 			agent, 
 			target, 
-			COALESCE(AVG(latency),0), 
-			COALESCE(MAX(latency),0), 
+			COALESCE(AVG(CAST(latency AS NUMERIC)), 0), 
+			COALESCE(MAX(CAST(latency AS NUMERIC)), 0), 
 			COUNT(*) FILTER (WHERE status = 200) as success, 
 			COUNT(*) FILTER (WHERE status != 200) as fail
 		FROM logs 
