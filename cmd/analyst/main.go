@@ -22,7 +22,7 @@ var (
 	sessionsMu sync.Mutex
 )
 
-// --- MODELLER (HTML'in beklediği formatlar) ---
+// --- MODELLER ---
 type ChartData struct {
 	Label string  `json:"label"`
 	Value float64 `json:"value"`
@@ -55,16 +55,23 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err = db.Ping(); err != nil {
-		log.Fatal("DB Bağlantı Hatası:", err)
+
+	// DB'ye ulaşana kadar bekle (Retry Logic)
+	for i := 0; i < 5; i++ {
+		if err = db.Ping(); err == nil {
+			fmt.Println("📊 Analyst: Veritabanı bağlantısı BAŞARILI.")
+			return
+		}
+		fmt.Println("⏳ DB bekleniyor...", err)
+		time.Sleep(2 * time.Second)
 	}
-	fmt.Println("📊 Analyst: Veritabanı ve Grafik Motoru Hazır.")
+	log.Fatal("DB Bağlantı Hatası:", err)
 }
 
 // --- GÜVENLİK MIDDLEWARE ---
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Login sayfasına ve statik varlıklara izin ver
+		// Login ve statiklere izin ver
 		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" || r.URL.Path == "/assets/style.css" {
 			next(w, r)
 			return
@@ -88,7 +95,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// --- LOGIN HANDLERS ---
+// --- LOGIN İŞLEMLERİ ---
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var creds LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
@@ -97,6 +104,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var storedHash string
+	// Şifre kontrolü
 	err := db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
 
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
@@ -126,13 +134,15 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-// --- GRAFİK VE TABLO HANDLERLARI (YENİ KISIM) ---
+// --- API ENDPOINTLERİ (DÜZELTİLMİŞ SQL SORGULARI) ---
 
-// 1. /api/agents (Dropdown listesini doldurur)
+// 1. /api/agents
 func handleAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	// 'agent' kolonu yoksa hatayı logla
 	rows, err := db.Query("SELECT DISTINCT agent FROM logs ORDER BY agent")
 	if err != nil {
+		log.Println("SQL Hatası (Agents):", err)
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -148,41 +158,37 @@ func handleAgents(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(agents)
 }
 
-// 2. /api/chart (ApexCharts verisini hazırlar)
+// 2. /api/chart (DÜZELTME: 'timestamp' yerine 'created_at' kullanıldı)
 func handleChart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	mode := r.URL.Query().Get("mode")
 	agent := r.URL.Query().Get("agent")
 
-	// Basit zaman gruplaması (Saatlik veya Günlük)
 	timeFormat := "YYYY-MM-DD HH24:00"
 	if mode == "day" {
 		timeFormat = "YYYY-MM-DD"
 	}
 
-	query := fmt.Sprintf(`
-		SELECT to_char(timestamp, '%s') as label, AVG(latency) as val 
+	// DİKKAT: Burada kolon adı 'created_at' olarak değiştirildi.
+	// Eğer veritabanında hala 'timestamp' ise burayı değiştirmen gerekebilir.
+	baseQuery := fmt.Sprintf(`
+		SELECT to_char(created_at, '%s') as label, AVG(latency) as val 
 		FROM logs 
-		WHERE 1=1 %s 
-		GROUP BY label 
-		ORDER BY label DESC LIMIT 24`, timeFormat, "")
+		WHERE 1=1 `, timeFormat)
+
+	groupBy := " GROUP BY label ORDER BY label DESC LIMIT 24"
 
 	var rows *sql.Rows
 	var err error
 
-	if agent != "" && agent != "undefined" {
-		query = fmt.Sprintf(`
-			SELECT to_char(timestamp, '%s') as label, AVG(latency) as val 
-			FROM logs 
-			WHERE agent = $1 
-			GROUP BY label 
-			ORDER BY label DESC LIMIT 24`, timeFormat)
-		rows, err = db.Query(query, agent)
+	if agent != "" && agent != "null" && agent != "undefined" {
+		rows, err = db.Query(baseQuery+" AND agent = $1"+groupBy, agent)
 	} else {
-		rows, err = db.Query(query)
+		rows, err = db.Query(baseQuery + groupBy)
 	}
 
 	if err != nil {
+		log.Println("SQL Hatası (Chart):", err) // Hatayı Docker loglarında görmek için
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -194,7 +200,7 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&d.Label, &d.Value)
 		data = append(data, d)
 	}
-	// Grafiğin soldan sağa akması için ters çevir
+	// Grafiği ters çevir (Eskiden yeniye)
 	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
 		data[i], data[j] = data[j], data[i]
 	}
@@ -202,11 +208,10 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// 3. /api/table (Grid.js tablosunu doldurur)
+// 3. /api/table
 func handleTable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Postgres Filter Syntax Kullanımı
 	rows, err := db.Query(`
 		SELECT 
 			agent, 
@@ -219,6 +224,7 @@ func handleTable(w http.ResponseWriter, r *http.Request) {
 		GROUP BY agent, target
 	`)
 	if err != nil {
+		log.Println("SQL Hatası (Table):", err)
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -240,21 +246,16 @@ func main() {
 	// Statik Dosyalar
 	fs := http.FileServer(http.Dir("./web/analyst"))
 
-	// Login & Logout
 	http.HandleFunc("/api/login", handleLogin)
 	http.HandleFunc("/api/logout", handleLogout)
-
-	// --- YENİ ENDPOINTLER ---
 	http.HandleFunc("/api/agents", authMiddleware(handleAgents))
 	http.HandleFunc("/api/chart", authMiddleware(handleChart))
 	http.HandleFunc("/api/table", authMiddleware(handleTable))
 
-	// HTML Sayfaları
 	http.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./web/analyst/login.html")
 	})
 
-	// Ana Handler
 	http.HandleFunc("/", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login.html" {
 			http.ServeFile(w, r, "./web/analyst/login.html")
@@ -268,6 +269,6 @@ func main() {
 		port = "3000"
 	}
 
-	fmt.Printf("🛡️ Analyst: Gelişmiş Grafik Modu Aktif (Port %s)\n", port)
+	fmt.Printf("🛡️ Analyst: Gelişmiş Mod Aktif (Port %s)\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
