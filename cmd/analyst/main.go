@@ -19,15 +19,22 @@ import (
 var db *sql.DB
 var (
 	sessions   = make(map[string]string)
-	sessionsMu sync.Mutex // Eşzamanlı erişim hatası olmasın diye kilit
+	sessionsMu sync.Mutex
 )
 
-// --- MODELLER ---
-type LogStats struct {
-	TotalPings   int     `json:"total_pings"`
-	SuccessRate  float64 `json:"success_rate"`
-	AvgLatency   float64 `json:"avg_latency"`
-	ActiveAgents int     `json:"active_agents"`
+// --- MODELLER (HTML'in beklediği formatlar) ---
+type ChartData struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+}
+
+type TableData struct {
+	Agent   string  `json:"agent"`
+	Target  string  `json:"target"`
+	AvgPing float64 `json:"avg_ping"`
+	MaxPing int     `json:"max_ping"`
+	Success int     `json:"success"`
+	Fail    int     `json:"fail"`
 }
 
 type LoginRequest struct {
@@ -35,12 +42,12 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// --- VERİTABANI ---
+// --- VERİTABANI BAĞLANTISI ---
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		log.Println("UYARI: DATABASE_URL yok, varsayılan kullanılıyor.")
+		log.Println("⚠️ DATABASE_URL yok, varsayılan kullanılıyor.")
 		connStr = "postgres://sentinel:gizlisifre@localhost:5432/sentineldb?sslmode=disable"
 	}
 
@@ -49,26 +56,20 @@ func initDB() {
 		log.Fatal(err)
 	}
 	if err = db.Ping(); err != nil {
-		log.Fatal("Analyst DB'ye bağlanamadı:", err)
+		log.Fatal("DB Bağlantı Hatası:", err)
 	}
-	fmt.Println("📊 Analyst: Veritabanı bağlantısı başarılı (Users tablosu kullanılıyor).")
+	fmt.Println("📊 Analyst: Veritabanı ve Grafik Motoru Hazır.")
 }
 
 // --- GÜVENLİK MIDDLEWARE ---
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Güvenlik Başlıkları
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
-
-		// Login sayfasına izin ver
+		// Login sayfasına ve statik varlıklara izin ver
 		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" || r.URL.Path == "/assets/style.css" {
 			next(w, r)
 			return
 		}
 
-		// Cookie Kontrolü
 		c, err := r.Cookie("analyst_session")
 		if err != nil {
 			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
@@ -87,70 +88,149 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// --- LOGIN İŞLEMLERİ ---
+// --- LOGIN HANDLERS ---
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var creds LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-		http.Error(w, "Geçersiz veri", http.StatusBadRequest)
+		http.Error(w, "Geçersiz veri", 400)
 		return
 	}
 
 	var storedHash string
-	// Commander ile AYNI kullanıcı tablosunu sorguluyoruz
 	err := db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
 
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
-		time.Sleep(1 * time.Second) // Brute-force önlemi
-		http.Error(w, "Giriş başarısız", http.StatusUnauthorized)
+		time.Sleep(1 * time.Second)
+		http.Error(w, "Giriş başarısız", 401)
 		return
 	}
 
-	sessionToken := uuid.New().String()
+	token := uuid.New().String()
 	sessionsMu.Lock()
-	sessions[sessionToken] = creds.Username
+	sessions[token] = creds.Username
 	sessionsMu.Unlock()
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "analyst_session",
-		Value:    sessionToken,
-		Expires:  time.Now().Add(24 * time.Hour),
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		Name: "analyst_session", Value: token, Expires: time.Now().Add(24 * time.Hour), Path: "/", HttpOnly: true,
 	})
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(200)
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
-	c, err := r.Cookie("analyst_session")
-	if err == nil {
+	if c, err := r.Cookie("analyst_session"); err == nil {
 		sessionsMu.Lock()
 		delete(sessions, c.Value)
 		sessionsMu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: "analyst_session", Value: "", Expires: time.Now(), Path: "/"})
+	http.SetCookie(w, &http.Cookie{Name: "analyst_session", MaxAge: -1, Path: "/"})
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-// --- API ---
-func getStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	var stats LogStats
-	// Basit bir istatistik sorgusu
-	err := db.QueryRow(`
-		SELECT 
-			COUNT(*) as total,
-			COALESCE(AVG(CASE WHEN status = 200 THEN 100.0 ELSE 0.0 END), 0) as success_rate,
-			COUNT(DISTINCT agent) as agents
-		FROM logs
-	`).Scan(&stats.TotalPings, &stats.SuccessRate, &stats.ActiveAgents)
+// --- GRAFİK VE TABLO HANDLERLARI (YENİ KISIM) ---
 
+// 1. /api/agents (Dropdown listesini doldurur)
+func handleAgents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	rows, err := db.Query("SELECT DISTINCT agent FROM logs ORDER BY agent")
 	if err != nil {
-		http.Error(w, "Veri hatası", 500)
+		http.Error(w, err.Error(), 500)
 		return
 	}
-	stats.AvgLatency = 45.0 // Şimdilik dummy veya hesaplanabilir
-	json.NewEncoder(w).Encode(stats)
+	defer rows.Close()
+
+	var agents []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err == nil {
+			agents = append(agents, a)
+		}
+	}
+	json.NewEncoder(w).Encode(agents)
+}
+
+// 2. /api/chart (ApexCharts verisini hazırlar)
+func handleChart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	mode := r.URL.Query().Get("mode")
+	agent := r.URL.Query().Get("agent")
+
+	// Basit zaman gruplaması (Saatlik veya Günlük)
+	timeFormat := "YYYY-MM-DD HH24:00"
+	if mode == "day" {
+		timeFormat = "YYYY-MM-DD"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT to_char(timestamp, '%s') as label, AVG(latency) as val 
+		FROM logs 
+		WHERE 1=1 %s 
+		GROUP BY label 
+		ORDER BY label DESC LIMIT 24`, timeFormat, "")
+
+	var rows *sql.Rows
+	var err error
+
+	if agent != "" && agent != "undefined" {
+		query = fmt.Sprintf(`
+			SELECT to_char(timestamp, '%s') as label, AVG(latency) as val 
+			FROM logs 
+			WHERE agent = $1 
+			GROUP BY label 
+			ORDER BY label DESC LIMIT 24`, timeFormat)
+		rows, err = db.Query(query, agent)
+	} else {
+		rows, err = db.Query(query)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	var data []ChartData
+	for rows.Next() {
+		var d ChartData
+		rows.Scan(&d.Label, &d.Value)
+		data = append(data, d)
+	}
+	// Grafiğin soldan sağa akması için ters çevir
+	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
+		data[i], data[j] = data[j], data[i]
+	}
+
+	json.NewEncoder(w).Encode(data)
+}
+
+// 3. /api/table (Grid.js tablosunu doldurur)
+func handleTable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Postgres Filter Syntax Kullanımı
+	rows, err := db.Query(`
+		SELECT 
+			agent, 
+			target, 
+			COALESCE(AVG(latency),0), 
+			COALESCE(MAX(latency),0), 
+			COUNT(*) FILTER (WHERE status = 200) as success, 
+			COUNT(*) FILTER (WHERE status != 200) as fail
+		FROM logs 
+		GROUP BY agent, target
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	var table []TableData
+	for rows.Next() {
+		var t TableData
+		rows.Scan(&t.Agent, &t.Target, &t.AvgPing, &t.MaxPing, &t.Success, &t.Fail)
+		table = append(table, t)
+	}
+	json.NewEncoder(w).Encode(table)
 }
 
 func main() {
@@ -160,11 +240,16 @@ func main() {
 	// Statik Dosyalar
 	fs := http.FileServer(http.Dir("./web/analyst"))
 
+	// Login & Logout
 	http.HandleFunc("/api/login", handleLogin)
 	http.HandleFunc("/api/logout", handleLogout)
-	http.HandleFunc("/api/stats", authMiddleware(getStats))
 
-	// Özel Login Sayfası Yönlendirmesi
+	// --- YENİ ENDPOINTLER ---
+	http.HandleFunc("/api/agents", authMiddleware(handleAgents))
+	http.HandleFunc("/api/chart", authMiddleware(handleChart))
+	http.HandleFunc("/api/table", authMiddleware(handleTable))
+
+	// HTML Sayfaları
 	http.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./web/analyst/login.html")
 	})
@@ -183,6 +268,6 @@ func main() {
 		port = "3000"
 	}
 
-	fmt.Printf("🛡️ Analyst: Login Ekranlı Modda Başlatıldı (Port %s)\n", port)
+	fmt.Printf("🛡️ Analyst: Gelişmiş Grafik Modu Aktif (Port %s)\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
