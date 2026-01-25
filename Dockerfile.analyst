@@ -1,18 +1,22 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:alpine AS builder
 
 WORKDIR /app
 
-# --- DEĞİŞİKLİK BURADA ---
-# go.mod, go.sum VE vendor klasörünü kopyalıyoruz
+# 1. KRİTİK DÜZELTME: Git'i yüklüyoruz. 
+# Go modüllerini indirmek için Git gereklidir, Alpine'de yüklü gelmez.
+RUN apk add --no-cache git
+
+# 2. Modül dosyalarını kopyala
 COPY go.mod go.sum ./
-COPY vendor/ ./vendor/
 
-# Artık 'go mod download' YAPMIYORUZ.
-# Onun yerine build alırken '-mod=vendor' diyoruz.
+# 3. Bağımlılıkları indir (Artık hata vermez)
+RUN go mod download
+
+# 4. Kaynak kodları kopyala ve derle
 COPY . .
-RUN go build -mod=vendor -o analyst cmd/analyst/main.go
-# -------------------------
+RUN go build -o analyst cmd/analyst/main.go
 
+# --- Final Sahnesi ---
 FROM alpine:latest
 WORKDIR /root/
 COPY --from=builder /app/web ./web 
