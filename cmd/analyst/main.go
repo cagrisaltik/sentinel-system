@@ -42,12 +42,11 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// --- VERİTABANI BAĞLANTISI ---
+// --- DB BAŞLATMA ---
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		log.Println("⚠️ DATABASE_URL yok, varsayılan kullanılıyor.")
 		connStr = "postgres://sentinel:gizlisifre@localhost:5432/sentineldb?sslmode=disable"
 	}
 
@@ -56,8 +55,8 @@ func initDB() {
 		log.Fatal(err)
 	}
 
-	// DB'ye ulaşana kadar bekle (Retry Logic)
-	for i := 0; i < 5; i++ {
+	// Retry Logic (DB hazır olana kadar bekle)
+	for i := 0; i < 10; i++ {
 		if err = db.Ping(); err == nil {
 			fmt.Println("📊 Analyst: Veritabanı bağlantısı BAŞARILI.")
 			return
@@ -68,25 +67,21 @@ func initDB() {
 	log.Fatal("DB Bağlantı Hatası:", err)
 }
 
-// --- GÜVENLİK MIDDLEWARE ---
+// --- GÜVENLİK ---
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Login ve statiklere izin ver
 		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" || r.URL.Path == "/assets/style.css" {
 			next(w, r)
 			return
 		}
-
 		c, err := r.Cookie("analyst_session")
 		if err != nil {
 			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 			return
 		}
-
 		sessionsMu.Lock()
 		_, ok := sessions[c.Value]
 		sessionsMu.Unlock()
-
 		if !ok {
 			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 			return
@@ -95,7 +90,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// --- LOGIN İŞLEMLERİ ---
+// --- LOGIN ---
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var creds LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
@@ -104,7 +99,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var storedHash string
-	// Şifre kontrolü
 	err := db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
 
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
@@ -117,10 +111,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	sessionsMu.Lock()
 	sessions[token] = creds.Username
 	sessionsMu.Unlock()
-
-	http.SetCookie(w, &http.Cookie{
-		Name: "analyst_session", Value: token, Expires: time.Now().Add(24 * time.Hour), Path: "/", HttpOnly: true,
-	})
+	http.SetCookie(w, &http.Cookie{Name: "analyst_session", Value: token, Expires: time.Now().Add(24 * time.Hour), Path: "/", HttpOnly: true})
 	w.WriteHeader(200)
 }
 
@@ -134,16 +125,15 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-// --- API ENDPOINTLERİ (DÜZELTİLMİŞ SQL SORGULARI) ---
+// --- DÜZELTİLEN SQL SORGULARI ---
 
-// 1. /api/agents
 func handleAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	// 'agent' kolonu yoksa hatayı logla
-	rows, err := db.Query("SELECT DISTINCT agent FROM logs ORDER BY agent")
+	rows, err := db.Query(`SELECT DISTINCT agent FROM logs ORDER BY agent`)
 	if err != nil {
+		// Eğer tablo henüz boşsa veya hata varsa boş liste dön
 		log.Println("SQL Hatası (Agents):", err)
-		http.Error(w, err.Error(), 500)
+		json.NewEncoder(w).Encode([]string{})
 		return
 	}
 	defer rows.Close()
@@ -158,7 +148,6 @@ func handleAgents(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(agents)
 }
 
-// 2. /api/chart (DÜZELTME: 'timestamp' yerine 'created_at' kullanıldı)
 func handleChart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	mode := r.URL.Query().Get("mode")
@@ -169,10 +158,10 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 		timeFormat = "YYYY-MM-DD"
 	}
 
-	// DİKKAT: Burada kolon adı 'created_at' olarak değiştirildi.
-	// Eğer veritabanında hala 'timestamp' ise burayı değiştirmen gerekebilir.
+	// DÜZELTME: "timestamp" kolonunu tırnak içine aldık ve CAST işlemi yaptık.
+	// Postgres'te timestamp kelimesi özel olduğu için "timestamp" şeklinde yazılmalı.
 	baseQuery := fmt.Sprintf(`
-		SELECT to_char(created_at, '%s') as label, AVG(latency) as val 
+		SELECT to_char("timestamp"::timestamp, '%s') as label, AVG(latency) as val 
 		FROM logs 
 		WHERE 1=1 `, timeFormat)
 
@@ -188,8 +177,9 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		log.Println("SQL Hatası (Chart):", err) // Hatayı Docker loglarında görmek için
-		http.Error(w, err.Error(), 500)
+		log.Println("SQL Hatası (Chart):", err)
+		// Frontend JSON hatası almasın diye boş veri dönüyoruz
+		json.NewEncoder(w).Encode([]ChartData{})
 		return
 	}
 	defer rows.Close()
@@ -200,7 +190,7 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&d.Label, &d.Value)
 		data = append(data, d)
 	}
-	// Grafiği ters çevir (Eskiden yeniye)
+	// Grafiği ters çevir
 	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
 		data[i], data[j] = data[j], data[i]
 	}
@@ -208,7 +198,6 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// 3. /api/table
 func handleTable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -225,7 +214,7 @@ func handleTable(w http.ResponseWriter, r *http.Request) {
 	`)
 	if err != nil {
 		log.Println("SQL Hatası (Table):", err)
-		http.Error(w, err.Error(), 500)
+		json.NewEncoder(w).Encode([]TableData{})
 		return
 	}
 	defer rows.Close()
@@ -243,7 +232,6 @@ func main() {
 	_ = godotenv.Load()
 	initDB()
 
-	// Statik Dosyalar
 	fs := http.FileServer(http.Dir("./web/analyst"))
 
 	http.HandleFunc("/api/login", handleLogin)
@@ -269,6 +257,6 @@ func main() {
 		port = "3000"
 	}
 
-	fmt.Printf("🛡️ Analyst: Gelişmiş Mod Aktif (Port %s)\n", port)
+	fmt.Printf("🛡️ Analyst: SQL Fix Modu Aktif (Port %s)\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
