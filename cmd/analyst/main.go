@@ -32,7 +32,7 @@ type TableData struct {
 	Agent   string  `json:"agent"`
 	Target  string  `json:"target"`
 	AvgPing float64 `json:"avg_ping"`
-	MaxPing float64 `json:"max_ping"` // Text -> Float çevrimi için güncellendi
+	MaxPing float64 `json:"max_ping"`
 	Success int     `json:"success"`
 	Fail    int     `json:"fail"`
 }
@@ -156,12 +156,11 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 		timeFormat = "YYYY-MM-DD"
 	}
 
-	// DÜZELTME: 'timestamp' yerine 'created_at' kullanıldı.
-	// DÜZELTME: Latency TEXT olduğu için sayıya (NUMERIC) çevrildi.
+	// DÜZELTME: "ms" ibaresini silip (REPLACE) sonra sayıya çeviriyoruz.
 	baseQuery := fmt.Sprintf(`
 		SELECT 
 			to_char(created_at, '%s') as label, 
-			AVG(CAST(latency AS NUMERIC)) as val 
+			AVG(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)) as val 
 		FROM logs 
 		WHERE 1=1 `, timeFormat)
 
@@ -200,13 +199,13 @@ func handleChart(w http.ResponseWriter, r *http.Request) {
 func handleTable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// DÜZELTME: Latency TEXT -> NUMERIC dönüşümü yapıldı
+	// DÜZELTME: REPLACE ile "ms" temizliği
 	rows, err := db.Query(`
 		SELECT 
 			agent, 
 			target, 
-			COALESCE(AVG(CAST(latency AS NUMERIC)), 0), 
-			COALESCE(MAX(CAST(latency AS NUMERIC)), 0), 
+			COALESCE(AVG(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)), 0), 
+			COALESCE(MAX(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)), 0), 
 			COUNT(*) FILTER (WHERE status = 200) as success, 
 			COUNT(*) FILTER (WHERE status != 200) as fail
 		FROM logs 
@@ -257,6 +256,6 @@ func main() {
 		port = "3000"
 	}
 
-	fmt.Printf("🛡️ Analyst: SQL Fix Modu Aktif (Port %s)\n", port)
+	fmt.Printf("🛡️ Analyst: 'ms' Fix Modu Aktif (Port %s)\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
