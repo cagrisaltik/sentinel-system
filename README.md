@@ -649,8 +649,8 @@ subject to the terms and conditions of the license.
 The Apache License 2.0 also provides an express patent license for covered
 contributions.
 
-See the (./LICENSE) file for the complete license text and
-NOTICE for attribution and third-party licensing information.
+See the [LICENSE](./LICENSE) file for the complete license text and
+[NOTICE](./NOTICE) for attribution and third-party licensing information.
 
 Trademark
 
