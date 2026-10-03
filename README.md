@@ -1,3 +1,12 @@
+<p align="center">
+  <img src="./assets/sentinel-banner.png" alt="Sentinel System">
+</p>
+
+
+
+
+
+
 # Sentinel System
 
 **Sentinel System** is a security-focused monitoring and agent management platform designed for authenticated communication between a central **Commander** and distributed **Scout Agents**.
