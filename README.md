@@ -639,9 +639,27 @@ If you discover a security vulnerability, please report it responsibly rather th
 
 ---
 
-# 📜 License
+📄 License
 
-License information will be added before the first stable release.
+Sentinel System is licensed under the Apache License, Version 2.0.
+
+You are free to use, modify, distribute, and use Sentinel System commercially,
+subject to the terms and conditions of the license.
+
+The Apache License 2.0 also provides an express patent license for covered
+contributions.
+
+See the (./LICENSE) file for the complete license text and
+NOTICE for attribution and third-party licensing information.
+
+Trademark
+
+The Sentinel System name, logo, branding, and other project marks are not
+licensed under the Apache License 2.0.
+
+Use of the Sentinel System source code does not grant permission to use the
+project's trademarks or branding in a way that implies endorsement,
+affiliation, or official distribution.
 
 ---
 
