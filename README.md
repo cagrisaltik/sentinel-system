@@ -2,11 +2,11 @@
 
 **Sentinel System** is a security-focused monitoring and agent management platform designed for authenticated communication between a central **Commander** and distributed **Scout Agents**.
 
-The project is currently in **Alpha** and focuses heavily on secure agent communication, authentication, task authorization, and a strong security-oriented architecture.
+The project is currently in **Alpha** and focuses on secure agent communication, authentication, task authorization, telemetry validation, and a defense-in-depth security architecture.
 
 > ⚠️ **Project Status: Alpha**
 >
-> Sentinel System is under active development and is **not production-ready yet**.
+> Sentinel System is under active development and is **not production-ready**.
 
 ---
 
@@ -14,11 +14,11 @@ The project is currently in **Alpha** and focuses heavily on secure agent commun
 
 ```text
                     ┌──────────────────────┐
-                    │      Web Browser     │
-                    │   Commander Panel    │
+                    │      Web Client      │
+                    │   Commander Panel   │
                     └──────────┬───────────┘
                                │
-                         HTTPS / WSS
+                            HTTPS
                                │
                     ┌──────────▼───────────┐
                     │      Commander       │
@@ -29,7 +29,7 @@ The project is currently in **Alpha** and focuses heavily on secure agent commun
                     │ Agent Gateway        │
                     └──────────┬───────────┘
                                │
-                         mTLS / WebSocket
+                         WSS + mTLS
                                │
               ┌────────────────┴────────────────┐
               │                                 │
@@ -45,6 +45,8 @@ The project is currently in **Alpha** and focuses heavily on secure agent commun
                          └───────────┘
 ```
 
+> The current Alpha architecture is evolving. Browser/API and Agent traffic separation is planned as part of the network architecture hardening phase.
+
 ---
 
 # ✨ Current Features
@@ -58,7 +60,7 @@ The project is currently in **Alpha** and focuses heavily on secure agent commun
 - Session expiration
 - Secure cookie configuration
 - HTTP request body size limits
-- Origin validation for WebSocket connections
+- WebSocket origin validation
 
 ---
 
@@ -68,34 +70,22 @@ Scout ↔ Commander communication uses:
 
 - TLS 1.3
 - Mutual TLS (mTLS)
-- Client certificate authentication
-- Certificate-based Agent identity
-- `wss://` WebSocket connections
+- Certificate-based Agent authentication
+- Secure WebSocket (`wss://`)
 - Certificate chain validation
-- Development PKI based on Smallstep
+- Short-lived authenticated tasks
 
-Current development PKI:
-
-```text
-Sentinel Root CA
-       │
-       ▼
-Sentinel Dev CA
-       │
-       ├── Commander Certificate
-       │
-       └── Scout Certificate
-```
+The system is designed so that an Agent must establish a trusted cryptographic identity before communicating with Commander.
 
 ---
 
 # 📡 WebSocket Security
 
-The Agent Gateway has several protections against malformed, replayed, or abusive traffic.
+The Agent Gateway includes multiple protections against malformed, oversized, replayed, or abusive traffic.
 
 ### Implemented
 
-- 64 KiB WebSocket message limit
+- WebSocket message size limits
 - Read deadlines
 - Write deadlines
 - Pong/keepalive handling
@@ -110,6 +100,8 @@ The Agent Gateway has several protections against malformed, replayed, or abusiv
 # 🎯 Task Authorization
 
 Tasks sent to Scout Agents contain security metadata.
+
+Example:
 
 ```json
 {
@@ -127,18 +119,13 @@ Tasks sent to Scout Agents contain security metadata.
 - Unique Task IDs
 - Task ownership validation
 - Task timestamp validation
-- Task expiration
-- Maximum task lifetime
+- Automatic task expiration
 - Replay protection
 - Duplicate Task ID detection
 - Strict target validation
 - Agent identity validation
 
-Current maximum task lifetime:
-
-```text
-60 seconds
-```
+Tasks are intentionally short-lived to reduce the impact of replayed or delayed commands.
 
 ---
 
@@ -146,7 +133,7 @@ Current maximum task lifetime:
 
 Scout Agents report execution results back to Commander.
 
-Telemetry validation currently includes:
+Telemetry validation includes:
 
 - CPU usage
 - RAM usage
@@ -173,6 +160,8 @@ Scout
         └── System Metrics
 ```
 
+Commander validates received telemetry before processing it.
+
 ---
 
 # ⚙️ Scout Agent
@@ -191,36 +180,38 @@ Current capabilities include:
 - Result reporting
 - Automatic reconnect handling
 
-Unknown or unsupported commands are rejected.
+Unsupported or unknown commands are rejected.
 
 ---
 
-# 🔑 PKI & Certificate Security
+# 🔑 Cryptography & PKI
 
-The project uses a private development PKI.
+Sentinel uses standard cryptographic protocols and certificate-based authentication rather than application-level custom cryptography.
 
-Current development environment:
+The current development environment uses a private certificate authority hierarchy for:
 
-```text
-Smallstep CLI
-Sentinel Root CA
-Sentinel Dev CA
-Commander Certificate
-Scout Certificate
-Browser Development Certificate
-```
-
-Commander and Scout certificates use certificate-based authentication rather than shared plaintext secrets.
+- Commander authentication
+- Scout authentication
+- Certificate chain validation
+- Local development
 
 Encrypted PKCS#8 private key support is also implemented.
+
+> Private keys, credentials, certificates containing sensitive material, and environment secrets must never be committed to the repository.
 
 ---
 
 # 🗄️ Database
 
-Commander currently supports the MySQL-based database implementation.
+Commander uses a database-backed architecture for:
 
-Database configuration is provided through environment variables.
+- Users
+- Agents
+- Targets
+- Logs
+- Monitoring results
+
+Database credentials are supplied through environment-based configuration.
 
 Sensitive credentials are not hardcoded into the application.
 
@@ -228,14 +219,10 @@ Sensitive credentials are not hardcoded into the application.
 
 # 🧪 Validation
 
-The current Alpha implementation has been tested with:
+The current Alpha implementation has been validated with:
 
 ```bash
 go test ./...
-```
-
-```text
-PASS
 ```
 
 Build validation:
@@ -245,12 +232,10 @@ go build ./cmd/commander
 go build ./cmd/scout
 ```
 
-Both Commander and Scout successfully build.
-
-Runtime testing has also covered:
+Runtime testing has covered:
 
 - mTLS connection
-- Scout registration
+- Agent registration
 - Task execution
 - Telemetry reporting
 - Agent disconnect
@@ -283,36 +268,33 @@ Sentinel System is being developed incrementally with security as a primary desi
 
 ## Phase 2 — Network Architecture Hardening 🔄
 
-### Listener Separation
-
 Separate browser/API traffic from Agent traffic.
 
 Planned architecture:
 
 ```text
-Browser
-   │
-   │ HTTPS
-   ▼
+Web Client
+    │
+    │ HTTPS
+    ▼
 Commander Web/API
-   │
-   │
-   │ Internal API
-   │
-   ▼
+    │
+    │ Internal Application Layer
+    ▼
 Agent Gateway
-   │
-   │ WSS + mTLS
-   ▼
+    │
+    │ WSS + mTLS
+    ▼
 Scout Agents
 ```
 
 Goals:
 
-- Browser clients should not require Agent mTLS certificates
+- Browser clients should not require Agent authentication certificates
 - Agent Gateway should remain strictly mTLS protected
 - Separate security policies for browser and Agent traffic
-- Cleaner reverse proxy integration
+- Cleaner reverse-proxy integration
+- Reduced attack surface
 
 ---
 
@@ -321,17 +303,17 @@ Goals:
 Strengthen the relationship between:
 
 ```text
-Agent Name
-     +
+Agent Identity
+      +
 Certificate Identity
-     +
-Public Key / Fingerprint
+      +
+Cryptographic Key Identity
 ```
 
 Planned protections:
 
 - Certificate fingerprint binding
-- Agent identity registration
+- Strong Agent identity registration
 - Duplicate identity detection
 - Certificate replacement workflow
 - Secure reconnect handling
@@ -341,7 +323,7 @@ Planned protections:
 
 ## Phase 4 — Analyst Security 🔜
 
-Harden the Analyst/frontend component.
+Further harden the Analyst/frontend layer.
 
 Planned work:
 
@@ -383,13 +365,13 @@ users.manage
 system.manage
 ```
 
-The authorization model will be designed around **least privilege**.
+The authorization model will follow the principle of **least privilege**.
 
 ---
 
 ## Phase 6 — API & Resource Protection 🔜
 
-Expand rate limiting beyond authentication.
+Expand rate limiting and resource protection beyond authentication.
 
 Planned protections:
 
@@ -408,7 +390,7 @@ Planned protections:
 
 Introduce a dedicated security audit trail.
 
-Planned events:
+Planned events include:
 
 - User login
 - Failed login
@@ -424,13 +406,13 @@ Planned events:
 - Configuration changes
 - Certificate operations
 
-Audit records should contain sufficient context for security investigations without unnecessarily storing sensitive data.
+Audit records will be designed to provide useful security context without unnecessarily storing sensitive information.
 
 ---
 
 ## Phase 8 — PKI & Certificate Lifecycle 🔜
 
-Move beyond the current development PKI.
+Move beyond the current development PKI model.
 
 Planned features:
 
@@ -444,20 +426,20 @@ Planned features:
 
 ---
 
-## Phase 9 — Cryptographic Agility / PQC 🔮
+## Phase 9 — Cryptographic Agility & PQC Readiness 🔮
 
-Long-term goal: prepare Sentinel for post-quantum cryptography without implementing cryptographic primitives ourselves.
+Long-term goal: prepare Sentinel for post-quantum cryptography without implementing custom cryptographic primitives.
 
 Goals:
 
 - Cryptographic agility
 - Algorithm negotiation
 - Modern TLS configuration
-- Hybrid/PQC-ready certificate architecture
-- Upgrade paths for future PQC standards
+- Hybrid/PQC-ready architecture
+- Upgrade paths for future standards
 - Avoid hard-coded cryptographic assumptions
 
-> Sentinel will rely on established cryptographic libraries and standards rather than implementing custom cryptography.
+> Sentinel will rely on established cryptographic libraries, protocols, and standards rather than implementing custom cryptography.
 
 ---
 
@@ -478,12 +460,13 @@ Before production deployment:
 - Alerting
 - Resource limits
 - Secure deployment documentation
+- Independent security testing
 
 ---
 
-# 🧭 Long-Term Security Model
+# 🧭 Security Principles
 
-The intended security model is based on several principles:
+Sentinel is designed around several core security principles.
 
 ### Zero Trust
 
@@ -491,7 +474,7 @@ Every Agent must authenticate before communicating with Commander.
 
 ### Least Privilege
 
-Components should receive only the permissions they require.
+Components and users should receive only the permissions they require.
 
 ### Defense in Depth
 
@@ -538,9 +521,9 @@ The system should be able to adopt stronger cryptographic algorithms as standard
 
 ### PKI
 
-- Smallstep `step-cli`
+- Smallstep
 - X.509 certificates
-- ECDSA development certificates
+- Standard cryptographic primitives
 
 ### Frontend
 
@@ -552,7 +535,7 @@ The system should be able to adopt stronger cryptographic algorithms as standard
 ### Infrastructure
 
 - Linux / Windows development environments
-- Reverse proxy compatible architecture
+- Reverse-proxy compatible architecture
 - Docker support under development
 
 ---
@@ -583,23 +566,27 @@ sentinel-system/
 
 ---
 
-# ⚠️ Alpha Disclaimer
+# ⚠️ Security Notice
 
 Sentinel System is currently an **Alpha security research and development project**.
 
-The security architecture is actively evolving and has not yet undergone a complete independent security audit or penetration test.
+The security architecture is actively evolving and has **not yet undergone a complete independent security audit or penetration test**.
 
-Do not deploy the current Alpha release directly to production or expose the Commander service to the public Internet without additional security controls.
+The current Alpha release should not be considered production-ready.
+
+Do not expose the Commander service directly to the public Internet without appropriate additional security controls and deployment hardening.
+
+If you discover a security vulnerability, please report it responsibly rather than publicly disclosing exploitation details before a fix is available.
 
 ---
 
 # 📜 License
 
-License information will be added as the project approaches its first stable release.
+License information will be added before the first stable release.
 
 ---
 
-## ⭐ Project Status
+# ⭐ Project Status
 
 ```text
 Version: 0.1.0-alpha
@@ -614,3 +601,7 @@ PKI Lifecycle   ██░░░░░░░░  Planned
 PQC Readiness   █░░░░░░░░░  Long-term
 Production      ██░░░░░░░░  Not Ready
 ```
+
+---
+
+**Sentinel System — Security first, by design.**
