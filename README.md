@@ -253,225 +253,275 @@ Runtime testing has covered:
 
 ---
 
-# 🚧 Roadmap
+## 🗺️ Roadmap
 
-Sentinel System is being developed incrementally with security as a primary design goal.
+### 🔐 Security & Core Architecture
 
-## Phase 1 — Agent Gateway Hardening ✅
+- [x] **Phase 1 — Agent Gateway Hardening**
+  - mTLS
+  - TLS 1.3
+  - WebSocket hardening
+  - Task authorization
+  - Replay protection
+  - Agent telemetry validation
+  - Connection and message limits
 
-- [x] TLS 1.3
-- [x] Mutual TLS
-- [x] Secure WebSocket (`wss://`)
-- [x] WebSocket message limits
-- [x] Read/write deadlines
-- [x] Pong/keepalive handling
-- [x] Task IDs
-- [x] Task expiration
-- [x] Replay protection
-- [x] Agent identity validation
-- [x] Telemetry validation
-- [x] Target validation
-- [x] Concurrent WebSocket state protection
+- [ ] **Phase 2 — Network Architecture Hardening**
+  - Separate browser HTTPS and Scout WSS listeners
+  - Network segmentation
+  - Reverse proxy architecture
+  - Internal service isolation
+
+- [ ] **Phase 3 — Agent Identity Hardening**
+  - Certificate-bound agent identity
+  - Certificate fingerprint validation
+  - Agent name collision protection
+  - Secure agent enrollment
+  - Agent revocation
+
+- [ ] **Phase 4 — Analyst Security**
+  - Harden Analyst endpoints
+  - Authentication improvements
+  - CSP hardening
+  - Session security
+  - API protection
+
+- [ ] **Phase 5 — Authorization & RBAC**
+  - Role-based access control
+  - Fine-grained permissions
+  - Resource-level authorization
+  - Administrative roles
+
+- [ ] **Phase 6 — API & Resource Protection**
+  - API rate limiting
+  - Export protection
+  - Request size limits
+  - Resource quotas
+  - Abuse prevention
+
+- [ ] **Phase 7 — Audit Logging**
+  - Security audit trail
+  - Authentication events
+  - Administrative actions
+  - Agent lifecycle events
+  - Task execution history
+
+- [ ] **Phase 8 — PKI & Certificate Lifecycle**
+  - Certificate rotation
+  - Agent certificate renewal
+  - Certificate revocation
+  - Automated enrollment
+  - CA lifecycle management
+
+- [ ] **Phase 9 — Cryptographic Agility & PQC Readiness**
+  - Algorithm agility
+  - Crypto abstraction layer
+  - Modern key exchange support
+  - Post-quantum migration readiness
+  - Hybrid cryptographic designs where appropriate
+
+- [ ] **Phase 10 — Production Hardening**
+  - Non-root containers
+  - Secret management
+  - Health/readiness endpoints
+  - Production logging
+  - Backup and recovery
+  - Operational hardening
 
 ---
 
-## Phase 2 — Network Architecture Hardening 🔄
+### 📊 Monitoring Engine
 
-Separate browser/API traffic from Agent traffic.
+- [ ] **Phase 11 — Monitoring Engine**
+  - Central monitoring engine
+  - Metric collection pipeline
+  - Metric normalization
+  - Threshold evaluation
+  - Monitoring state management
+  - Real-time status tracking
 
-Planned architecture:
+- [ ] **Phase 12 — Sensor Framework**
+  - Pluggable sensor architecture
+  - CPU monitoring
+  - RAM monitoring
+  - Disk monitoring
+  - Ping monitoring
+  - TCP port monitoring
+  - HTTP/HTTPS monitoring
+  - DNS monitoring
+  - Process monitoring
+  - Service monitoring
+  - Custom sensors
+
+- [ ] **Phase 13 — Historical Monitoring & Alerting**
+  - Historical metric storage
+  - Time-series data
+  - Threshold-based alerts
+  - Alert severity levels
+  - Alert acknowledgment
+  - Alert recovery
+  - Alert history
+  - Notification policies
+
+- [ ] **Phase 14 — Discovery & Network Monitoring**
+  - Automatic host discovery
+  - Network discovery
+  - Service discovery
+  - SNMP monitoring
+  - Network interface monitoring
+  - Device inventory
+  - Network topology discovery
+  - Network maps
+
+---
+
+### 🔭 Observability
+
+- [ ] **Phase 15 — Observability Stack**
+  - Metrics
+  - Logs
+  - Events
+  - Distributed traces
+  - Unified telemetry model
+  - OpenTelemetry support
+  - Telemetry correlation
+
+- [ ] **Phase 16 — Dependency Mapping & Smart Alerting**
+  - Service dependency maps
+  - Infrastructure dependencies
+  - Root-cause-oriented alerting
+  - Alert correlation
+  - Alert deduplication
+  - Alert suppression
+  - Dependency-aware notifications
+
+- [ ] **Phase 17 — Synthetic Monitoring & SLA**
+  - HTTP synthetic checks
+  - API monitoring
+  - DNS synthetic checks
+  - TCP connectivity checks
+  - Availability monitoring
+  - SLA calculations
+  - Uptime history
+  - Maintenance windows
+
+---
+
+### 📈 Dashboard & Operations
+
+- [ ] **Phase 18 — Dashboard, Maps & Reporting**
+  - Custom dashboards
+  - Real-time graphs
+  - Historical graphs
+  - Network maps
+  - Infrastructure maps
+  - Monitoring overviews
+  - PDF/Excel reporting
+  - Scheduled reports
+  - SLA reports
+
+- [ ] **Phase 19 — Templates, Integrations & Automation**
+  - Monitoring templates
+  - Windows templates
+  - Linux templates
+  - Docker templates
+  - Database templates
+  - Web server templates
+  - Reusable sensor configurations
+  - Webhooks
+  - Email notifications
+  - Telegram notifications
+  - External integrations
+  - Automated agent deployment
+
+- [ ] **Phase 20 — Advanced Security Monitoring**
+  - File integrity monitoring
+  - Security event monitoring
+  - Authentication monitoring
+  - Suspicious activity detection
+  - Security-focused sensors
+  - Security scoring
+  - Threat-oriented telemetry
+  - Security event correlation
+
+---
+
+### 🌐 Distributed & Enterprise Architecture
+
+- [ ] **Phase 21 — Distributed Architecture**
+  - Multiple Commanders
+  - Distributed Scouts
+  - Remote monitoring nodes
+  - Regional monitoring
+  - High availability
+  - Failover
+  - Distributed task scheduling
+
+- [ ] **Phase 22 — Multi-Tenant & Cloud-Ready Architecture**
+  - Tenant isolation
+  - Organization management
+  - Tenant-level RBAC
+  - Resource isolation
+  - Cloud deployment support
+  - Horizontal scaling
+  - Centralized management
+
+- [ ] **Phase 23 — Advanced Automation & Intelligence**
+  - Automated remediation
+  - Event-driven actions
+  - Intelligent anomaly detection
+  - Capacity forecasting
+  - Automated root-cause assistance
+  - Advanced operational insights
+
+---
+
+### 🎯 Long-Term Vision
+
+Sentinel System is designed to evolve from a secure agent-management platform into a complete **self-hosted infrastructure monitoring, observability and security platform**.
+
+The long-term architecture is built around the existing security core:
 
 ```text
-Web Client
-    │
-    │ HTTPS
-    ▼
-Commander Web/API
-    │
-    │ Internal Application Layer
-    ▼
-Agent Gateway
-    │
-    │ WSS + mTLS
-    ▼
-Scout Agents
+                         SENTINEL SYSTEM
+                                │
+                ┌───────────────┼───────────────┐
+                │               │               │
+           MONITORING       SECURITY       OBSERVABILITY
+                │               │               │
+             Sensors          FIM            Metrics
+             Discovery        Events          Logs
+             SNMP             Auth            Traces
+             Network          Security        OpenTelemetry
+                │               │               │
+                └───────────────┼───────────────┘
+                                │
+                         MONITORING ENGINE
+                                │
+                           ALERT ENGINE
+                                │
+                ┌───────────────┼───────────────┐
+                │               │               │
+              Email          Telegram        Webhook
+                │               │               │
+                └───────────────┼───────────────┘
+                                │
+                            DASHBOARD
+                                │
+                ┌───────────────┼───────────────┐
+                │               │               │
+              Maps             SLA           Reports
+                                │
+                         Multi-Tenant
+                                │
+                    Self-Hosted / Cloud
 ```
 
-Goals:
+The existing **Commander → Scout → Secure Agent Gateway** architecture remains the foundation of the platform.
 
-- Browser clients should not require Agent authentication certificates
-- Agent Gateway should remain strictly mTLS protected
-- Separate security policies for browser and Agent traffic
-- Cleaner reverse-proxy integration
-- Reduced attack surface
+New monitoring, observability and security capabilities are intended to be implemented as additional layers on top of this foundation rather than replacing the existing core.
 
----
-
-## Phase 3 — Agent Identity Hardening 🔜
-
-Strengthen the relationship between:
-
-```text
-Agent Identity
-      +
-Certificate Identity
-      +
-Cryptographic Key Identity
-```
-
-Planned protections:
-
-- Certificate fingerprint binding
-- Strong Agent identity registration
-- Duplicate identity detection
-- Certificate replacement workflow
-- Secure reconnect handling
-- Agent revocation
-
----
-
-## Phase 4 — Analyst Security 🔜
-
-Further harden the Analyst/frontend layer.
-
-Planned work:
-
-- Authentication integration
-- Secure session handling
-- CSP hardening
-- CSRF protection where applicable
-- API authorization
-- Input validation
-- Output encoding
-- Secure error handling
-- Rate limiting
-- Secure export handling
-
----
-
-## Phase 5 — Authorization & RBAC 🔜
-
-Introduce role-based access control.
-
-Planned roles:
-
-```text
-Admin
-Operator
-Viewer
-```
-
-Potential permissions:
-
-```text
-agents.read
-agents.manage
-tasks.create
-tasks.cancel
-logs.read
-reports.export
-users.manage
-system.manage
-```
-
-The authorization model will follow the principle of **least privilege**.
-
----
-
-## Phase 6 — API & Resource Protection 🔜
-
-Expand rate limiting and resource protection beyond authentication.
-
-Planned protections:
-
-- API rate limiting
-- Per-user limits
-- Per-IP limits
-- Agent connection limits
-- Task creation limits
-- Export limits
-- Request body limits
-- Resource exhaustion protection
-
----
-
-## Phase 7 — Audit Logging 🔜
-
-Introduce a dedicated security audit trail.
-
-Planned events include:
-
-- User login
-- Failed login
-- Logout
-- User creation
-- Permission changes
-- Agent registration
-- Agent authentication
-- Agent revocation
-- Task creation
-- Task execution
-- Task failure
-- Configuration changes
-- Certificate operations
-
-Audit records will be designed to provide useful security context without unnecessarily storing sensitive information.
-
----
-
-## Phase 8 — PKI & Certificate Lifecycle 🔜
-
-Move beyond the current development PKI model.
-
-Planned features:
-
-- Certificate rotation
-- Certificate expiration monitoring
-- Certificate revocation
-- Agent certificate enrollment
-- Automated certificate renewal
-- CA lifecycle management
-- Production PKI architecture
-
----
-
-## Phase 9 — Cryptographic Agility & PQC Readiness 🔮
-
-Long-term goal: prepare Sentinel for post-quantum cryptography without implementing custom cryptographic primitives.
-
-Goals:
-
-- Cryptographic agility
-- Algorithm negotiation
-- Modern TLS configuration
-- Hybrid/PQC-ready architecture
-- Upgrade paths for future standards
-- Avoid hard-coded cryptographic assumptions
-
-> Sentinel will rely on established cryptographic libraries, protocols, and standards rather than implementing custom cryptography.
-
----
-
-## Phase 10 — Production Hardening 🔮
-
-Before production deployment:
-
-- Non-root containers
-- Minimal container images
-- Secret management
-- Health/readiness endpoints
-- Structured logging
-- Production log levels
-- Security headers
-- Backup strategy
-- Database hardening
-- Monitoring
-- Alerting
-- Resource limits
-- Secure deployment documentation
-- Independent security testing
-
----
+> **Security first. Monitoring second. Observability and automation on top.**
 
 # 🧭 Security Principles
 
