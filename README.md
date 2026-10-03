@@ -604,4 +604,13 @@ Production      ██░░░░░░░░  Not Ready
 
 ---
 
+```markdown
+## 🔒 Security
+
+Security vulnerabilities should be reported privately.
+
+Please do not publicly disclose an exploitable vulnerability before a fix or coordinated disclosure has been established.
+
+See [SECURITY.md](SECURITY.md) for the vulnerability reporting process.
+
 **Sentinel System — Security first, by design.**
