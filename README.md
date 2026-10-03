@@ -613,5 +613,7 @@ Please do not publicly disclose an exploitable vulnerability before a fix or coo
 See [SECURITY.md](./SECURITY.md) for the vulnerability reporting process.
 
 
+---
+
 
 **Sentinel System — Security first, by design.**
