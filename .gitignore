@@ -1,23 +1,18 @@
-# --- GÜVENLİK (EN ÖNEMLİSİ) ---
+# --- GÜVENLİK ---
 .env
-.env*
+.env/*
 *.key
 *.pem
 
-# --- GO Build Dosyaları (Gereksiz) ---
+# --- GO BUILD ---
 /bin/
 /dist/
-# Binary çıktıları (main.go derlenince çıkanlar)
-commander
-scout
-analyst
-sentinel-*
 *.exe
 *.dll
 *.so
 *.dylib
 
-# --- IDE ve Sistem Dosyaları ---
+# --- IDE / SYSTEM ---
 .vscode/
 .idea/
 .DS_Store
