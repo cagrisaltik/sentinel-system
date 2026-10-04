@@ -1,28 +1,377 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/google/uuid"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
-var db *sql.DB
-var (
-	sessions   = make(map[string]string)
-	sessionsMu sync.Mutex
+const (
+	analystCookieName = "analyst_session"
+	maxLoginBodyBytes = 16 * 1024
+	maxQueryDuration  = 5 * time.Second
 )
 
-// --- MODELLER ---
+type Config struct {
+	Port                     string
+	TLSCertFile              string
+	TLSKeyFile               string
+	WebDir                   string
+	SessionTTL               time.Duration
+	LoginMaxAttempts         int
+	LoginIdentityMaxAttempts int
+	LoginWindow              time.Duration
+	LoginBlockTime           time.Duration
+	APIMaxRequests           int
+	APIWindow                time.Duration
+}
+
+func loadConfig() (Config, error) {
+	port := strings.TrimSpace(os.Getenv("ANALYST_PORT"))
+	if port == "" {
+		port = "3000"
+	}
+	portNumber := 0
+	if _, err := fmt.Sscanf(port, "%d", &portNumber); err != nil || portNumber < 1 || portNumber > 65535 || fmt.Sprint(portNumber) != port {
+		return Config{}, errors.New("ANALYST_PORT must be a valid TCP port")
+	}
+
+	certFile := strings.TrimSpace(os.Getenv("TLS_CERT_FILE"))
+	keyFile := strings.TrimSpace(os.Getenv("TLS_KEY_FILE"))
+	if certFile == "" || keyFile == "" {
+		return Config{}, errors.New("TLS_CERT_FILE and TLS_KEY_FILE are required")
+	}
+
+	sessionHours, err := positiveEnvInt("SESSION_TTL_HOURS", 24, 1, 8760)
+	if err != nil {
+		return Config{}, err
+	}
+	loginMax, err := positiveEnvInt("LOGIN_MAX_ATTEMPTS", 5, 1, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	identityMax, err := positiveEnvInt("LOGIN_IDENTITY_MAX_ATTEMPTS", 3, 1, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	loginWindowMinutes, err := positiveEnvInt("LOGIN_WINDOW_MINUTES", 10, 1, 1440)
+	if err != nil {
+		return Config{}, err
+	}
+	loginBlockMinutes, err := positiveEnvInt("LOGIN_BLOCK_MINUTES", 15, 1, 1440)
+	if err != nil {
+		return Config{}, err
+	}
+	apiLimit, err := positiveEnvInt("API_RATE_LIMIT_PER_MINUTE", 240, 1, 100000)
+	if err != nil {
+		return Config{}, err
+	}
+	webDir := strings.TrimSpace(os.Getenv("ANALYST_WEB_DIR"))
+	if webDir == "" {
+		webDir = filepath.Join("web", "analyst")
+	}
+
+	return Config{
+		Port:                     port,
+		TLSCertFile:              certFile,
+		TLSKeyFile:               keyFile,
+		WebDir:                   webDir,
+		SessionTTL:               time.Duration(sessionHours) * time.Hour,
+		LoginMaxAttempts:         loginMax,
+		LoginIdentityMaxAttempts: identityMax,
+		LoginWindow:              time.Duration(loginWindowMinutes) * time.Minute,
+		LoginBlockTime:           time.Duration(loginBlockMinutes) * time.Minute,
+		APIMaxRequests:           apiLimit,
+		APIWindow:                time.Minute,
+	}, nil
+}
+
+func positiveEnvInt(name string, fallback, minimum, maximum int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil || parsed < minimum || parsed > maximum || fmt.Sprint(parsed) != value {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func openDatabase(dsn string) (*sql.DB, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return nil, errors.New("DATABASE_URL is required")
+	}
+	database, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, errors.New("MySQL connection could not be configured")
+	}
+	database.SetMaxOpenConns(10)
+	database.SetMaxIdleConns(5)
+	database.SetConnMaxLifetime(30 * time.Minute)
+	database.SetConnMaxIdleTime(5 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, errors.New("MySQL is unavailable")
+	}
+	return database, nil
+}
+
+func verifyDatabaseSchema(database *sql.DB) error {
+	if database == nil {
+		return errors.New("database is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, query := range []string{
+		"SELECT 1 FROM users LIMIT 0",
+		"SELECT 1 FROM logs LIMIT 0",
+	} {
+		rows, err := database.QueryContext(ctx, query)
+		if err != nil {
+			return errors.New("required MySQL schema is unavailable")
+		}
+		if err := rows.Close(); err != nil {
+			return errors.New("required MySQL schema could not be verified")
+		}
+	}
+	return nil
+}
+
+type credentialStore interface {
+	PasswordHash(context.Context, string) (string, error)
+}
+
+type mysqlCredentialStore struct{ db *sql.DB }
+
+func (s mysqlCredentialStore) PasswordHash(ctx context.Context, username string) (string, error) {
+	if s.db == nil {
+		return "", errors.New("database unavailable")
+	}
+	var hash string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT password_hash FROM users WHERE username = ?", username,
+	).Scan(&hash)
+	return hash, err
+}
+
+type Session struct {
+	Username string
+	Expires  time.Time
+}
+
+type sessionStore struct {
+	mu       sync.RWMutex
+	sessions map[string]Session
+	ttl      time.Duration
+}
+
+func newSessionStore(ttl time.Duration) *sessionStore {
+	return &sessionStore{sessions: make(map[string]Session), ttl: ttl}
+}
+
+func generateSessionToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func (s *sessionStore) create(username string, now time.Time) (string, error) {
+	token, err := generateSessionToken()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.sessions[token] = Session{Username: username, Expires: now.Add(s.ttl)}
+	s.mu.Unlock()
+	return token, nil
+}
+
+func (s *sessionStore) get(token string, now time.Time) (Session, bool) {
+	s.mu.RLock()
+	session, ok := s.sessions[token]
+	s.mu.RUnlock()
+	if !ok {
+		return Session{}, false
+	}
+	if !now.Before(session.Expires) {
+		s.delete(token)
+		return Session{}, false
+	}
+	return session, true
+}
+
+func (s *sessionStore) delete(token string) {
+	s.mu.Lock()
+	delete(s.sessions, token)
+	s.mu.Unlock()
+}
+
+func (s *sessionStore) cleanup(now time.Time) {
+	s.mu.Lock()
+	for token, session := range s.sessions {
+		if !now.Before(session.Expires) {
+			delete(s.sessions, token)
+		}
+	}
+	s.mu.Unlock()
+}
+
+type loginAttempt struct {
+	count       int
+	firstSeen   time.Time
+	blockedTill time.Time
+	lastSeen    time.Time
+}
+
+type loginRateLimiter struct {
+	mu            sync.Mutex
+	entries       map[string]*loginAttempt
+	limit         int
+	identityLimit int
+	window        time.Duration
+	cooldown      time.Duration
+}
+
+func newLoginRateLimiter(limit, identityLimit int, window, cooldown time.Duration) *loginRateLimiter {
+	return &loginRateLimiter{
+		entries: make(map[string]*loginAttempt), limit: limit, identityLimit: identityLimit, window: window, cooldown: cooldown,
+	}
+}
+
+func (l *loginRateLimiter) blocked(keys []string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	blocked := false
+	for _, key := range keys {
+		entry, ok := l.entries[key]
+		if !ok {
+			continue
+		}
+		entry.lastSeen = now
+		if now.Before(entry.blockedTill) {
+			blocked = true
+			continue
+		}
+		if now.Sub(entry.firstSeen) >= l.window {
+			entry.count = 0
+			entry.firstSeen = now
+			entry.blockedTill = time.Time{}
+		}
+	}
+	return blocked
+}
+
+func (l *loginRateLimiter) failure(keys []string, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, key := range keys {
+		entry, ok := l.entries[key]
+		if !ok {
+			entry = &loginAttempt{firstSeen: now}
+			l.entries[key] = entry
+		}
+		if now.Sub(entry.firstSeen) >= l.window {
+			entry.count = 0
+			entry.firstSeen = now
+			entry.blockedTill = time.Time{}
+		}
+		entry.count++
+		entry.lastSeen = now
+		limit := l.limit
+		if strings.HasPrefix(key, "identity:") {
+			limit = l.identityLimit
+		}
+		if entry.count >= limit {
+			entry.blockedTill = now.Add(l.cooldown)
+		}
+	}
+}
+
+func (l *loginRateLimiter) cleanup(now time.Time) {
+	l.mu.Lock()
+	for key, entry := range l.entries {
+		if !now.Before(entry.blockedTill) && now.Sub(entry.lastSeen) > l.window+l.cooldown {
+			delete(l.entries, key)
+		}
+	}
+	l.mu.Unlock()
+}
+
+type requestWindow struct {
+	started  time.Time
+	lastSeen time.Time
+	count    int
+}
+
+type requestRateLimiter struct {
+	mu      sync.Mutex
+	entries map[string]*requestWindow
+	limit   int
+	window  time.Duration
+}
+
+func newRequestRateLimiter(limit int, window time.Duration) *requestRateLimiter {
+	return &requestRateLimiter{entries: make(map[string]*requestWindow), limit: limit, window: window}
+}
+
+func (l *requestRateLimiter) allow(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.entries[key]
+	if !ok {
+		l.entries[key] = &requestWindow{started: now, lastSeen: now, count: 1}
+		return true
+	}
+	entry.lastSeen = now
+	if now.Sub(entry.started) >= l.window {
+		entry.started = now
+		entry.count = 0
+	}
+	if entry.count >= l.limit {
+		return false
+	}
+	entry.count++
+	return true
+}
+
+func (l *requestRateLimiter) cleanup(now time.Time) {
+	l.mu.Lock()
+	for key, entry := range l.entries {
+		if now.Sub(entry.lastSeen) > 2*l.window {
+			delete(l.entries, key)
+		}
+	}
+	l.mu.Unlock()
+}
+
 type ChartData struct {
 	Label string  `json:"label"`
 	Value float64 `json:"value"`
@@ -42,220 +391,496 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// --- DB BAĞLANTISI ---
-func initDB() {
-	var err error
-	connStr := os.Getenv("DATABASE_URL")
-	if connStr == "" {
-		connStr = "postgres://sentinel:gizlisifre@localhost:5432/sentineldb?sslmode=disable"
-	}
+type AnalystApp struct {
+	db                *sql.DB
+	credentials       credentialStore
+	sessions          *sessionStore
+	loginLimiter      *loginRateLimiter
+	apiLimiter        *requestRateLimiter
+	dummyPasswordHash []byte
+	config            Config
+}
 
-	db, err = sql.Open("postgres", connStr)
+func newAnalystApp(db *sql.DB, credentials credentialStore, config Config) (*AnalystApp, error) {
+	randomPassword := make([]byte, 32)
+	if _, err := rand.Read(randomPassword); err != nil {
+		return nil, errors.New("could not initialize credential verification")
+	}
+	dummyHash, err := bcrypt.GenerateFromPassword(randomPassword, bcrypt.DefaultCost)
 	if err != nil {
-		log.Fatal(err)
+		return nil, errors.New("could not initialize credential verification")
 	}
-
-	for i := 0; i < 10; i++ {
-		if err = db.Ping(); err == nil {
-			fmt.Println("✅ Analyst: Veritabanı bağlantısı BAŞARILI.")
-			return
-		}
-		fmt.Println("⏳ DB bekleniyor...", err)
-		time.Sleep(2 * time.Second)
+	if credentials == nil {
+		credentials = mysqlCredentialStore{db: db}
 	}
-	log.Fatal("❌ DB Bağlantı Hatası:", err)
+	return &AnalystApp{
+		db:                db,
+		credentials:       credentials,
+		sessions:          newSessionStore(config.SessionTTL),
+		loginLimiter:      newLoginRateLimiter(config.LoginMaxAttempts, config.LoginIdentityMaxAttempts, config.LoginWindow, config.LoginBlockTime),
+		apiLimiter:        newRequestRateLimiter(config.APIMaxRequests, config.APIWindow),
+		dummyPasswordHash: dummyHash,
+		config:            config,
+	}, nil
 }
 
-// --- GÜVENLİK ---
-func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/login" || r.URL.Path == "/login.html" || r.URL.Path == "/assets/style.css" {
-			next(w, r)
+func (a *AnalystApp) Handler() http.Handler {
+	protectedAPI := http.NewServeMux()
+	protectedAPI.HandleFunc("/api/logout", a.handleLogout)
+	protectedAPI.HandleFunc("/api/agents", a.handleAgents)
+	protectedAPI.HandleFunc("/api/chart", a.handleChart)
+	protectedAPI.HandleFunc("/api/table", a.handleTable)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/login", a.loginRateLimit(http.HandlerFunc(a.handleLogin)))
+	mux.Handle("/api", a.apiRateLimit(a.authMiddleware(protectedAPI)))
+	mux.Handle("/api/", a.apiRateLimit(a.authMiddleware(protectedAPI)))
+	mux.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet, http.MethodHead)
 			return
 		}
-		c, err := r.Cookie("analyst_session")
+		http.ServeFile(w, r, filepath.Join(a.config.WebDir, "login.html"))
+	})
+	for _, asset := range []string{"login.css", "login.js"} {
+		asset := asset
+		mux.HandleFunc("/assets/"+asset, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				methodNotAllowed(w, http.MethodGet, http.MethodHead)
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(a.config.WebDir, "assets", asset))
+		})
+	}
+	files := http.FileServer(http.Dir(a.config.WebDir))
+	mux.Handle("/", a.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet, http.MethodHead)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})))
+
+	return securityHeaders(mux)
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; script-src-attr 'none'; style-src 'self' https://fonts.googleapis.com https://unpkg.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func methodNotAllowed(w http.ResponseWriter, allowed ...string) {
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (a *AnalystApp) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(analystCookieName)
 		if err != nil {
-			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+			a.unauthorized(w, r)
 			return
 		}
-		sessionsMu.Lock()
-		_, ok := sessions[c.Value]
-		sessionsMu.Unlock()
-		if !ok {
-			http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+		if _, ok := a.sessions.get(cookie.Value, time.Now()); !ok {
+			log.Print("security event: invalid session")
+			a.unauthorized(w, r)
 			return
 		}
-		next(w, r)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
-// --- LOGIN ---
-func handleLogin(w http.ResponseWriter, r *http.Request) {
-	var creds LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-		http.Error(w, "Geçersiz veri", 400)
+func (a *AnalystApp) unauthorized(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		log.Print("security event: authentication failure")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	var storedHash string
-	err := db.QueryRow("SELECT password_hash FROM users WHERE username = $1", creds.Username).Scan(&storedHash)
-
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
-		time.Sleep(1 * time.Second)
-		http.Error(w, "Giriş başarısız", 401)
-		return
-	}
-
-	token := uuid.New().String()
-	sessionsMu.Lock()
-	sessions[token] = creds.Username
-	sessionsMu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "analyst_session", Value: token, Expires: time.Now().Add(24 * time.Hour), Path: "/", HttpOnly: true})
-	w.WriteHeader(200)
-}
-
-func handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie("analyst_session"); err == nil {
-		sessionsMu.Lock()
-		delete(sessions, c.Value)
-		sessionsMu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{Name: "analyst_session", MaxAge: -1, Path: "/"})
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-// --- DÜZELTİLMİŞ SQL SORGULARI ---
-
-func handleAgents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	rows, err := db.Query(`SELECT DISTINCT agent FROM logs ORDER BY agent`)
-	if err != nil {
-		log.Println("SQL Hatası (Agents):", err)
-		json.NewEncoder(w).Encode([]string{})
-		return
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
 	}
-	defer rows.Close()
-
-	var agents []string
-	for rows.Next() {
-		var a string
-		if err := rows.Scan(&a); err == nil {
-			agents = append(agents, a)
-		}
+	if r.RemoteAddr == "" {
+		return "unknown"
 	}
-	json.NewEncoder(w).Encode(agents)
+	return r.RemoteAddr
 }
 
-func handleChart(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	mode := r.URL.Query().Get("mode")
-	agent := r.URL.Query().Get("agent")
+func (a *AnalystApp) loginRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if a.loginLimiter.blocked([]string{"ip:" + ip}, time.Now()) {
+			log.Print("security event: login rate limit")
+			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
-	timeFormat := "YYYY-MM-DD HH24:00"
-	if mode == "day" {
-		timeFormat = "YYYY-MM-DD"
+func (a *AnalystApp) apiRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.apiLimiter.allow(clientIP(r), time.Now()) {
+			log.Print("security event: API rate limit")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, target any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *AnalystApp) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	var creds LoginRequest
+	if err := decodeJSONBody(w, r, maxLoginBodyBytes, &creds); err != nil {
+		a.loginLimiter.failure([]string{"ip:" + clientIP(r)}, time.Now())
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	creds.Username = strings.TrimSpace(creds.Username)
+	ip := clientIP(r)
+	keys := []string{"ip:" + ip, "identity:" + ip + "\x00" + strings.ToLower(creds.Username)}
+	if a.loginLimiter.blocked(keys, time.Now()) {
+		log.Print("security event: login rate limit")
+		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+		return
+	}
+	if creds.Username == "" || len(creds.Username) > 100 || len(creds.Password) == 0 || len(creds.Password) > 72 || hasControlCharacter(creds.Username) {
+		a.loginLimiter.failure(keys, time.Now())
+		log.Print("security event: login failure")
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
 	}
 
-	// DÜZELTME: "ms" ibaresini silip (REPLACE) sonra sayıya çeviriyoruz.
-	baseQuery := fmt.Sprintf(`
-		SELECT 
-			to_char(created_at, '%s') as label, 
-			AVG(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)) as val 
-		FROM logs 
-		WHERE 1=1 `, timeFormat)
-
-	groupBy := " GROUP BY label ORDER BY label DESC LIMIT 24"
-
-	var rows *sql.Rows
-	var err error
-
-	if agent != "" && agent != "null" && agent != "undefined" {
-		rows, err = db.Query(baseQuery+" AND agent = $1"+groupBy, agent)
-	} else {
-		rows, err = db.Query(baseQuery + groupBy)
+	storedHash, err := a.credentials.PasswordHash(r.Context(), creds.Username)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = bcrypt.CompareHashAndPassword(a.dummyPasswordHash, []byte(creds.Password))
+		a.loginLimiter.failure(keys, time.Now())
+		log.Print("security event: login failure")
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
 	}
-
 	if err != nil {
-		log.Println("SQL Hatası (Chart):", err)
-		json.NewEncoder(w).Encode([]ChartData{})
+		log.Print("analyst credential lookup failed")
+		http.Error(w, "authentication unavailable", http.StatusInternalServerError)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(creds.Password)) != nil {
+		a.loginLimiter.failure(keys, time.Now())
+		log.Print("security event: login failure")
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if existing, err := r.Cookie(analystCookieName); err == nil {
+		a.sessions.delete(existing.Value)
+	}
+	token, err := a.sessions.create(creds.Username, time.Now())
+	if err != nil {
+		log.Print("analyst session creation failed")
+		http.Error(w, "authentication unavailable", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: analystCookieName, Value: token, Path: "/",
+		Expires: time.Now().Add(a.config.SessionTTL), MaxAge: int(a.config.SessionTTL.Seconds()),
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
+	log.Print("security event: login success")
+	w.WriteHeader(http.StatusOK)
+}
+
+func hasControlCharacter(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *AnalystApp) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if cookie, err := r.Cookie(analystCookieName); err == nil {
+		a.sessions.delete(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: analystCookieName, Value: "", Path: "/", MaxAge: -1,
+		Expires: time.Unix(1, 0), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *AnalystApp) handleAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), maxQueryDuration)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, "SELECT DISTINCT agent FROM logs ORDER BY agent")
+	if err != nil {
+		log.Print("analyst database query failed: agents")
+		writeJSON(w, []string{})
 		return
 	}
 	defer rows.Close()
-
-	var data []ChartData
+	agents := make([]string, 0)
 	for rows.Next() {
-		var d ChartData
-		rows.Scan(&d.Label, &d.Value)
-		data = append(data, d)
+		var agent string
+		if err := rows.Scan(&agent); err != nil {
+			log.Print("analyst database result failed: agents")
+			writeJSON(w, []string{})
+			return
+		}
+		agents = append(agents, agent)
 	}
-	// Grafiği ters çevir
+	if err := rows.Err(); err != nil {
+		log.Print("analyst database result failed: agents")
+		writeJSON(w, []string{})
+		return
+	}
+	writeJSON(w, agents)
+}
+
+var analystAgentNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
+
+func (a *AnalystApp) handleChart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "hour"
+	}
+	if mode != "hour" && mode != "day" {
+		http.Error(w, "invalid mode", http.StatusBadRequest)
+		return
+	}
+	agent := r.URL.Query().Get("agent")
+	if agent == "null" || agent == "undefined" {
+		agent = ""
+	}
+	if agent != "" && !analystAgentNamePattern.MatchString(agent) {
+		http.Error(w, "invalid agent", http.StatusBadRequest)
+		return
+	}
+	timeFormat := "%Y-%m-%d %H:00"
+	if mode == "day" {
+		timeFormat = "%Y-%m-%d"
+	}
+	query := `SELECT DATE_FORMAT(created_at, ?) AS label,
+		AVG(CAST(REPLACE(latency, 'ms', '') AS DECIMAL(10,3))) AS val
+		FROM logs WHERE 1=1`
+	args := []any{timeFormat}
+	if agent != "" {
+		query += " AND agent = ?"
+		args = append(args, agent)
+	}
+	query += " GROUP BY label ORDER BY label DESC LIMIT 24"
+
+	ctx, cancel := context.WithTimeout(r.Context(), maxQueryDuration)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		log.Print("analyst database query failed: chart")
+		writeJSON(w, []ChartData{})
+		return
+	}
+	defer rows.Close()
+	data := make([]ChartData, 0)
+	for rows.Next() {
+		var item ChartData
+		if err := rows.Scan(&item.Label, &item.Value); err != nil {
+			log.Print("analyst database result failed: chart")
+			writeJSON(w, []ChartData{})
+			return
+		}
+		data = append(data, item)
+	}
+	if err := rows.Err(); err != nil {
+		log.Print("analyst database result failed: chart")
+		writeJSON(w, []ChartData{})
+		return
+	}
 	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
 		data[i], data[j] = data[j], data[i]
 	}
-
-	json.NewEncoder(w).Encode(data)
+	writeJSON(w, data)
 }
 
-func handleTable(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// DÜZELTME: REPLACE ile "ms" temizliği
-	rows, err := db.Query(`
-		SELECT 
-			agent, 
-			target, 
-			COALESCE(AVG(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)), 0), 
-			COALESCE(MAX(CAST(REPLACE(latency, 'ms', '') AS NUMERIC)), 0), 
-			COUNT(*) FILTER (WHERE status = 200) as success, 
-			COUNT(*) FILTER (WHERE status != 200) as fail
-		FROM logs 
-		GROUP BY agent, target
-	`)
+func (a *AnalystApp) handleTable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), maxQueryDuration)
+	defer cancel()
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT agent, target,
+			COALESCE(AVG(CAST(REPLACE(latency, 'ms', '') AS DECIMAL(10,3))), 0),
+			COALESCE(MAX(CAST(REPLACE(latency, 'ms', '') AS DECIMAL(10,3))), 0),
+			SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status <> 200 THEN 1 ELSE 0 END) AS fail
+		FROM logs
+		GROUP BY agent, target`)
 	if err != nil {
-		log.Println("SQL Hatası (Table):", err)
-		json.NewEncoder(w).Encode([]TableData{})
+		log.Print("analyst database query failed: table")
+		writeJSON(w, []TableData{})
 		return
 	}
 	defer rows.Close()
-
-	var table []TableData
+	table := make([]TableData, 0)
 	for rows.Next() {
-		var t TableData
-		rows.Scan(&t.Agent, &t.Target, &t.AvgPing, &t.MaxPing, &t.Success, &t.Fail)
-		table = append(table, t)
+		var item TableData
+		if err := rows.Scan(&item.Agent, &item.Target, &item.AvgPing, &item.MaxPing, &item.Success, &item.Fail); err != nil {
+			log.Print("analyst database result failed: table")
+			writeJSON(w, []TableData{})
+			return
+		}
+		table = append(table, item)
 	}
-	json.NewEncoder(w).Encode(table)
+	if err := rows.Err(); err != nil {
+		log.Print("analyst database result failed: table")
+		writeJSON(w, []TableData{})
+		return
+	}
+	writeJSON(w, table)
+}
+
+func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Print("analyst JSON response could not be encoded")
+	}
+}
+
+func (a *AnalystApp) cleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			a.sessions.cleanup(now)
+			a.loginLimiter.cleanup(now)
+			a.apiLimiter.cleanup(now)
+		}
+	}
 }
 
 func main() {
 	_ = godotenv.Load()
-	initDB()
-
-	fs := http.FileServer(http.Dir("./web/analyst"))
-
-	http.HandleFunc("/api/login", handleLogin)
-	http.HandleFunc("/api/logout", handleLogout)
-	http.HandleFunc("/api/agents", authMiddleware(handleAgents))
-	http.HandleFunc("/api/chart", authMiddleware(handleChart))
-	http.HandleFunc("/api/table", authMiddleware(handleTable))
-
-	http.HandleFunc("/login.html", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./web/analyst/login.html")
-	})
-
-	http.HandleFunc("/", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/login.html" {
-			http.ServeFile(w, r, "./web/analyst/login.html")
-			return
-		}
-		fs.ServeHTTP(w, r)
-	}))
-
-	port := os.Getenv("ANALYST_PORT")
-	if port == "" {
-		port = "3000"
+	config, err := loadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
+		log.Fatal("DATABASE_URL is required")
+	}
+	certificate, err := tls.LoadX509KeyPair(config.TLSCertFile, config.TLSKeyFile)
+	if err != nil {
+		log.Fatal("Analyst TLS certificate or key could not be loaded")
+	}
+	database, err := openDatabase(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := verifyDatabaseSchema(database); err != nil {
+		_ = database.Close()
+		log.Fatal("Analyst MySQL schema is not ready")
+	}
+	app, err := newAnalystApp(database, nil, config)
+	if err != nil {
+		_ = database.Close()
+		log.Fatal(err)
 	}
 
-	fmt.Printf("🛡️ Analyst: 'ms' Fix Modu Aktif (Port %s)\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	server := &http.Server{
+		Addr:              ":" + config.Port,
+		Handler:           app.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    32 * 1024,
+		TLSConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			Certificates: []tls.Certificate{certificate},
+		},
+	}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		_ = database.Close()
+		log.Fatal("Analyst HTTPS listener could not start")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go app.cleanupLoop(ctx)
+	serveErrors := make(chan error, 1)
+	go func() {
+		serveErrors <- server.ServeTLS(listener, "", "")
+	}()
+	log.Printf("Analyst HTTPS server started on port %s", config.Port)
+
+	select {
+	case <-ctx.Done():
+		log.Print("Analyst shutdown started")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Print("Analyst HTTP shutdown timed out")
+			_ = server.Close()
+		}
+	case err := <-serveErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Print("Analyst HTTPS server stopped unexpectedly")
+		}
+	}
+	_ = database.Close()
+	log.Print("Analyst server stopped")
 }
