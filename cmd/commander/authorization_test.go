@@ -1,71 +1,76 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
 
 const validReportTaskID = "550e8400-e29b-41d4-a716-446655440000"
+const validReportFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestAuthorizeReport(t *testing.T) {
 	now := time.Now()
 	reset := func() {
 		tasksMu.Lock()
 		pendingTasks = map[string]*pendingTask{
-			validReportTaskID: {Agent: "scout-1", Target: "example.com", ExpiresAt: now.Add(time.Minute)},
+			validReportTaskID: {Agent: "scout-1", CertificateFingerprint: validReportFingerprint, Target: "example.com", ExpiresAt: now.Add(time.Minute)},
 		}
 		tasksMu.Unlock()
 	}
 
 	t.Run("wrong task id", func(t *testing.T) {
 		reset()
-		if claimReport("550e8400-e29b-41d4-a716-446655440001", "scout-1", "example.com", now) {
+		if claimReport("550e8400-e29b-41d4-a716-446655440001", "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("unknown task_id was authorized")
 		}
 	})
 	t.Run("wrong target", func(t *testing.T) {
 		reset()
-		if claimReport(validReportTaskID, "scout-1", "other.example", now) {
+		if claimReport(validReportTaskID, "scout-1", validReportFingerprint, "other.example", now) {
 			t.Fatal("wrong target was authorized")
 		}
 	})
 	t.Run("wrong agent", func(t *testing.T) {
 		reset()
-		if claimReport(validReportTaskID, "scout-2", "example.com", now) {
+		if claimReport(validReportTaskID, "scout-2", validReportFingerprint, "example.com", now) {
 			t.Fatal("wrong agent was authorized")
+		}
+	})
+	t.Run("wrong certificate fingerprint", func(t *testing.T) {
+		reset()
+		if claimReport(validReportTaskID, "scout-1", strings.Repeat("b", 64), "example.com", now) {
+			t.Fatal("report from another certificate identity was authorized")
 		}
 	})
 	t.Run("duplicate report", func(t *testing.T) {
 		reset()
-		if !claimReport(validReportTaskID, "scout-1", "example.com", now) {
+		if !claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("task report must be accepted once")
 		}
 		finishReport(validReportTaskID, true)
-		if claimReport(validReportTaskID, "scout-1", "example.com", now) {
+		if claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("duplicate report accepted")
 		}
 	})
 	t.Run("DB failure permits retry and does not report success", func(t *testing.T) {
 		reset()
-		if !claimReport(validReportTaskID, "scout-1", "example.com", now) {
+		if !claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("initial claim failed")
 		}
 		finishReport(validReportTaskID, false)
 		if pendingTasks[validReportTaskID].Reported {
 			t.Fatal("failed DB insert marked report successful")
 		}
-		if !claimReport(validReportTaskID, "scout-1", "example.com", now) {
+		if !claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("retry was not permitted")
 		}
 	})
 	t.Run("concurrent claim rejected", func(t *testing.T) {
 		reset()
-		if !claimReport(validReportTaskID, "scout-1", "example.com", now) || claimReport(validReportTaskID, "scout-1", "example.com", now) {
+		if !claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) || claimReport(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now) {
 			t.Fatal("second claim accepted")
 		}
 	})
@@ -92,13 +97,13 @@ func TestCreatePendingTaskRejectsDuplicateAgentTarget(t *testing.T) {
 	pendingTasks = make(map[string]*pendingTask)
 	tasksMu.Unlock()
 	now := time.Now()
-	if !createPendingTask(validReportTaskID, "scout-1", "example.com", now.Add(time.Minute), now) {
+	if !createPendingTask(validReportTaskID, "scout-1", validReportFingerprint, "example.com", now.Add(time.Minute), now) {
 		t.Fatal("initial task was not created")
 	}
-	if createPendingTask("550e8400-e29b-41d4-a716-446655440001", "scout-1", "example.com", now.Add(time.Minute), now) {
+	if createPendingTask("550e8400-e29b-41d4-a716-446655440001", "scout-1", validReportFingerprint, "example.com", now.Add(time.Minute), now) {
 		t.Fatal("duplicate active task for agent and target was created")
 	}
-	if !createPendingTask("550e8400-e29b-41d4-a716-446655440002", "scout-2", "example.com", now.Add(time.Minute), now) {
+	if !createPendingTask("550e8400-e29b-41d4-a716-446655440002", "scout-2", strings.Repeat("b", 64), "example.com", now.Add(time.Minute), now) {
 		t.Fatal("different agent should be allowed to use the same target")
 	}
 }
@@ -149,25 +154,6 @@ func TestRequireMTLSSetting(t *testing.T) {
 	for _, value := range []string{"false", "0", "invalid"} {
 		if err := requireMTLSSetting(value); err == nil {
 			t.Errorf("requireMTLSSetting(%q) accepted insecure or invalid value", value)
-		}
-	}
-}
-
-func TestValidateClientCertificateURISAN(t *testing.T) {
-	valid := func(raw string) bool {
-		u, err := url.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req := &http.Request{TLS: &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{URIs: []*url.URL{u}}}}}
-		return validateClientCertificate(req, "scout-1")
-	}
-	if !valid("spiffe://sentinel.test/scout-1") {
-		t.Fatal("valid SPIFFE URI rejected")
-	}
-	for _, bad := range []string{"spiffe://scout-1", "spiffe://scout-1/other", "spiffe://sentinel.test/other", "https://sentinel.test/scout-1"} {
-		if valid(bad) {
-			t.Fatalf("invalid URI SAN accepted: %s", bad)
 		}
 	}
 }

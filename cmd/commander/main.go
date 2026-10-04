@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -42,6 +45,11 @@ var db *sql.DB
 // Configuration
 // -----------------------------------------------------------------------------
 
+type agentIdentityBindings struct {
+	byAgent       map[string]string
+	byFingerprint map[string]string
+}
+
 type Config struct {
 	Host string
 	Port string
@@ -49,6 +57,8 @@ type Config struct {
 	TLSCertFile  string
 	TLSKeyFile   string
 	ClientCAFile string
+
+	AgentIdentityBindings agentIdentityBindings
 
 	AllowedOrigins map[string]bool
 
@@ -68,8 +78,9 @@ var cfg Config
 // -----------------------------------------------------------------------------
 
 type AgentConnection struct {
-	Name string
-	Conn *websocket.Conn
+	Name                   string
+	CertificateFingerprint string
+	Conn                   *websocket.Conn
 
 	WriteMu sync.Mutex
 
@@ -87,21 +98,22 @@ var (
 )
 
 type pendingTask struct {
-	Agent     string
-	Target    string
-	ExpiresAt time.Time
-	Reported  bool
-	Reporting bool
+	Agent                  string
+	CertificateFingerprint string
+	Target                 string
+	ExpiresAt              time.Time
+	Reported               bool
+	Reporting              bool
 }
 
-func claimReport(taskID, agentName, target string, now time.Time) bool {
+func claimReport(taskID, agentName, certificateFingerprint, target string, now time.Time) bool {
 	if !validTaskID(taskID) {
 		return false
 	}
 	tasksMu.Lock()
 	defer tasksMu.Unlock()
 	task, ok := pendingTasks[taskID]
-	if !ok || task.Reported || task.Reporting || task.Agent != agentName || task.Target != target || !now.Before(task.ExpiresAt) {
+	if !ok || task.Reported || task.Reporting || task.Agent != agentName || task.CertificateFingerprint != certificateFingerprint || task.Target != target || !now.Before(task.ExpiresAt) {
 		return false
 	}
 	task.Reporting = true
@@ -116,7 +128,7 @@ func validTaskID(taskID string) bool {
 	return err == nil && id.String() == strings.ToLower(taskID)
 }
 
-func createPendingTask(taskID, agentName, target string, expiresAt, now time.Time) bool {
+func createPendingTask(taskID, agentName, certificateFingerprint, target string, expiresAt, now time.Time) bool {
 	if !validTaskID(taskID) || !expiresAt.After(now) {
 		return false
 	}
@@ -136,7 +148,7 @@ func createPendingTask(taskID, agentName, target string, expiresAt, now time.Tim
 			return false
 		}
 	}
-	pendingTasks[taskID] = &pendingTask{Agent: agentName, Target: target, ExpiresAt: expiresAt}
+	pendingTasks[taskID] = &pendingTask{Agent: agentName, CertificateFingerprint: certificateFingerprint, Target: target, ExpiresAt: expiresAt}
 	return true
 }
 
@@ -164,6 +176,12 @@ func validReportTelemetry(msg models.Command, currentAgentName string) bool {
 		msg.RAM >= 0 && msg.RAM <= 100 &&
 		msg.Disk >= 0 && msg.Disk <= 100 &&
 		len(msg.Time) <= maxReportTimeLength
+}
+
+func validAgentReportIdentity(msg models.Command, connection *AgentConnection, bindings agentIdentityBindings) bool {
+	return validAgentMessageType(msg.Type) && connection != nil &&
+		authorizedAgentConnection(connection, connection.Name, bindings) &&
+		validReportTelemetry(msg, connection.Name)
 }
 
 // -----------------------------------------------------------------------------
@@ -232,6 +250,59 @@ func validAgentName(name string) bool {
 	return agentNameRegex.MatchString(name)
 }
 
+func parseAgentIdentityBindings(raw string) (agentIdentityBindings, error) {
+	bindings := agentIdentityBindings{
+		byAgent:       make(map[string]string),
+		byFingerprint: make(map[string]string),
+	}
+	if strings.TrimSpace(raw) == "" {
+		return agentIdentityBindings{}, fmt.Errorf("at least one name=fingerprint binding is required")
+	}
+
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		name, fingerprint, found := strings.Cut(entry, "=")
+		name = strings.TrimSpace(name)
+		fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+		if !found || strings.Contains(fingerprint, "=") || !validAgentName(name) {
+			return agentIdentityBindings{}, fmt.Errorf("each entry must be a valid agent name and SHA-256 fingerprint")
+		}
+		if len(fingerprint) != sha256.Size*2 {
+			return agentIdentityBindings{}, fmt.Errorf("each certificate fingerprint must contain 64 hexadecimal characters")
+		}
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil {
+			return agentIdentityBindings{}, fmt.Errorf("each certificate fingerprint must contain 64 hexadecimal characters")
+		}
+		fingerprint = hex.EncodeToString(decoded)
+
+		if _, exists := bindings.byAgent[name]; exists {
+			return agentIdentityBindings{}, fmt.Errorf("duplicate agent name in identity bindings")
+		}
+		if _, exists := bindings.byFingerprint[fingerprint]; exists {
+			return agentIdentityBindings{}, fmt.Errorf("a certificate fingerprint may be bound to only one agent")
+		}
+		bindings.byAgent[name] = fingerprint
+		bindings.byFingerprint[fingerprint] = name
+	}
+
+	return bindings, nil
+}
+
+func (bindings agentIdentityBindings) authorizes(name, fingerprint string) bool {
+	return name != "" && fingerprint != "" &&
+		bindings.byAgent[name] == fingerprint &&
+		bindings.byFingerprint[fingerprint] == name
+}
+
+func certificateFingerprint(cert *x509.Certificate) string {
+	if cert == nil || len(cert.Raw) == 0 {
+		return ""
+	}
+	fingerprint := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(fingerprint[:])
+}
+
 func validTarget(target string) bool {
 	target = strings.TrimSpace(target)
 
@@ -257,13 +328,19 @@ func validTarget(target string) bool {
 // Environment
 // -----------------------------------------------------------------------------
 
-func loadConfig() {
+func loadConfig() error {
 	cfg.Host = getEnv("COMMANDER_HOST", "0.0.0.0")
 	cfg.Port = getEnv("COMMANDER_PORT", "8080")
 
 	cfg.TLSCertFile = os.Getenv("COMMANDER_TLS_CERT")
 	cfg.TLSKeyFile = os.Getenv("COMMANDER_TLS_KEY")
 	cfg.ClientCAFile = os.Getenv("COMMANDER_CLIENT_CA")
+
+	bindings, err := parseAgentIdentityBindings(os.Getenv("SCOUT_ALLOWED_IDENTITIES"))
+	if err != nil {
+		return fmt.Errorf("invalid SCOUT_ALLOWED_IDENTITIES: %w", err)
+	}
+	cfg.AgentIdentityBindings = bindings
 
 	cfg.MaxWSConnections = getEnvInt("MAX_WS_CONNECTIONS", 100)
 
@@ -321,6 +398,8 @@ func loadConfig() {
 	for origin := range cfg.AllowedOrigins {
 		log.Println("   ->", origin)
 	}
+
+	return nil
 }
 
 func getEnv(key, fallback string) string {
@@ -1206,22 +1285,15 @@ func startTaskScheduler() {
 					continue
 				}
 
-				clientsMu.RLock()
-
-				agent, exists :=
-					clients[agentName]
-
-				clientsMu.RUnlock()
-
-				if !exists ||
-					agent == nil {
+				agent := agentConnectionForTask(agentName, cfg.AgentIdentityBindings)
+				if agent == nil {
 					continue
 				}
 
 				now := time.Now().UTC()
 				taskID := uuid.NewString()
 				expiresAt := now.Add(30 * time.Second)
-				if !createPendingTask(taskID, agentName, targetURL, expiresAt, now) {
+				if !createPendingTask(taskID, agentName, agent.CertificateFingerprint, targetURL, expiresAt, now) {
 					continue
 				}
 
@@ -2038,38 +2110,181 @@ var upgrader = websocket.Upgrader{
 // Client certificate identity
 // -----------------------------------------------------------------------------
 
-func validateClientCertificate(
-	r *http.Request,
-	agentName string,
-) bool {
+type agentIdentityRejection string
 
-	if r.TLS == nil ||
-		len(r.TLS.PeerCertificates) == 0 {
+const (
+	identityMissingPeerCertificate       agentIdentityRejection = "missing peer certificate"
+	identityUnverifiedPeerCertificate    agentIdentityRejection = "peer certificate is not verified"
+	identityInvalidAgentName             agentIdentityRejection = "invalid agent name"
+	identityCertificateNameMismatch      agentIdentityRejection = "certificate SAN does not match agent name"
+	identityUnauthorizedCertificate      agentIdentityRejection = "unauthorized certificate identity"
+	identityAgentBoundToOtherCertificate agentIdentityRejection = "agent identity already bound to another certificate"
+	identityCertificateBoundToOtherAgent agentIdentityRejection = "certificate already bound to another agent"
+)
+
+func verifiedPeerCertificate(state *tls.ConnectionState) (*x509.Certificate, agentIdentityRejection) {
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return nil, identityMissingPeerCertificate
+	}
+	if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
+		return nil, identityUnverifiedPeerCertificate
+	}
+
+	peerCertificate := state.PeerCertificates[0]
+	verifiedLeaf := state.VerifiedChains[0][0]
+	if len(peerCertificate.Raw) == 0 || !bytes.Equal(peerCertificate.Raw, verifiedLeaf.Raw) {
+		return nil, identityUnverifiedPeerCertificate
+	}
+	return peerCertificate, ""
+}
+
+func certificateSANMatchesAgent(cert *x509.Certificate, agentName string) bool {
+	if cert == nil {
 		return false
 	}
-
-	cert :=
-		r.TLS.PeerCertificates[0]
-
 	for _, dnsName := range cert.DNSNames {
-
-		if dnsName == agentName ||
-			dnsName ==
-				agentName+".sentinel.test" {
-
+		if dnsName == agentName || dnsName == agentName+".sentinel.test" {
 			return true
 		}
 	}
-
 	for _, uri := range cert.URIs {
-
 		if uri.String() == "spiffe://sentinel.test/"+agentName {
-
 			return true
 		}
 	}
-
 	return false
+}
+
+func authorizeAgentIdentity(
+	state *tls.ConnectionState,
+	agentName string,
+	bindings agentIdentityBindings,
+) (string, agentIdentityRejection) {
+	if !validAgentName(agentName) {
+		return "", identityInvalidAgentName
+	}
+	cert, rejection := verifiedPeerCertificate(state)
+	if rejection != "" {
+		return "", rejection
+	}
+	fingerprint := certificateFingerprint(cert)
+	if fingerprint == "" {
+		return "", identityUnverifiedPeerCertificate
+	}
+	if boundAgent, exists := bindings.byFingerprint[fingerprint]; exists && boundAgent != agentName {
+		return fingerprint, identityCertificateBoundToOtherAgent
+	}
+	allowedFingerprint, exists := bindings.byAgent[agentName]
+	if !exists {
+		return fingerprint, identityUnauthorizedCertificate
+	}
+	if allowedFingerprint != fingerprint {
+		return fingerprint, identityAgentBoundToOtherCertificate
+	}
+	if !bindings.authorizes(agentName, fingerprint) {
+		return fingerprint, identityCertificateBoundToOtherAgent
+	}
+	if !certificateSANMatchesAgent(cert, agentName) {
+		return fingerprint, identityCertificateNameMismatch
+	}
+	return fingerprint, ""
+}
+
+func authenticatedAgentConnection(
+	state *tls.ConnectionState,
+	agentName string,
+	conn *websocket.Conn,
+	bindings agentIdentityBindings,
+) (*AgentConnection, string, agentIdentityRejection) {
+	fingerprint, rejection := authorizeAgentIdentity(state, agentName, bindings)
+	if rejection != "" {
+		return nil, fingerprint, rejection
+	}
+	return &AgentConnection{
+		Name:                   agentName,
+		CertificateFingerprint: fingerprint,
+		Conn:                   conn,
+		LastSeen:               time.Now(),
+	}, fingerprint, ""
+}
+
+func logAgentIdentityRejection(rejection agentIdentityRejection, agentName, fingerprint string) {
+	if fingerprint == "" {
+		log.Printf("agent registration rejected: %s agent=%q", rejection, agentName)
+		return
+	}
+	log.Printf("agent registration rejected: %s agent=%q fingerprint=%s", rejection, agentName, fingerprint)
+}
+
+func closeAgentAuthorizationFailure(conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "agent authorization failed"),
+		time.Now().Add(wsWriteWait),
+	)
+}
+
+func closeReplacedAgentConnection(connection *AgentConnection) {
+	if connection == nil || connection.Conn == nil {
+		return
+	}
+	connection.WriteMu.Lock()
+	_ = connection.Conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "connection replaced by authenticated reconnect"),
+		time.Now().Add(wsWriteWait),
+	)
+	connection.WriteMu.Unlock()
+	_ = connection.Conn.Close()
+}
+
+func registerAgentConnection(
+	connection *AgentConnection,
+	bindings agentIdentityBindings,
+) (*AgentConnection, agentIdentityRejection) {
+	if connection == nil || connection.Conn == nil || !bindings.authorizes(connection.Name, connection.CertificateFingerprint) {
+		return nil, identityUnauthorizedCertificate
+	}
+
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+
+	for connectedName, connected := range clients {
+		if connectedName != connection.Name && connected != nil && connected.CertificateFingerprint == connection.CertificateFingerprint {
+			return nil, identityCertificateBoundToOtherAgent
+		}
+	}
+
+	existing := clients[connection.Name]
+	if existing != nil && existing.CertificateFingerprint != connection.CertificateFingerprint {
+		return nil, identityAgentBoundToOtherCertificate
+	}
+	clients[connection.Name] = connection
+	return existing, ""
+}
+
+func authorizedAgentConnection(connection *AgentConnection, agentName string, bindings agentIdentityBindings) bool {
+	return connection != nil && connection.Conn != nil && connection.Name == agentName &&
+		bindings.authorizes(connection.Name, connection.CertificateFingerprint)
+}
+
+func currentAuthorizedAgentConnection(agentName string, connection *AgentConnection, bindings agentIdentityBindings) bool {
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+	return clients[agentName] == connection && authorizedAgentConnection(connection, agentName, bindings)
+}
+
+func agentConnectionForTask(agentName string, bindings agentIdentityBindings) *AgentConnection {
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+	connection := clients[agentName]
+	if !authorizedAgentConnection(connection, agentName, bindings) {
+		return nil
+	}
+	return connection
 }
 
 // -----------------------------------------------------------------------------
@@ -2157,8 +2372,9 @@ func handleConnections(
 		http.Error(w, "TLS is required", http.StatusUpgradeRequired)
 		return
 	}
-	if len(r.TLS.PeerCertificates) == 0 {
-		http.Error(w, "A client certificate is required", http.StatusUnauthorized)
+	if _, rejection := verifiedPeerCertificate(r.TLS); rejection != "" {
+		log.Printf("agent connection rejected: %s remote_addr=%s", rejection, r.RemoteAddr)
+		http.Error(w, "Agent authorization failed", http.StatusUnauthorized)
 		return
 	}
 
@@ -2304,60 +2520,30 @@ messageLoop:
 					msg.Agent,
 				)
 
-			if !validAgentName(
+			registeredAgentConn, fingerprint, rejection := authenticatedAgentConnection(
+				r.TLS,
 				agentName,
-			) {
-
-				log.Println(
-					"⛔ Invalid agent name:",
-					agentName,
-				)
-
+				ws,
+				cfg.AgentIdentityBindings,
+			)
+			if rejection != "" {
+				logAgentIdentityRejection(rejection, agentName, fingerprint)
+				closeAgentAuthorizationFailure(ws)
 				break
 			}
-
-			if !validateClientCertificate(
-				r,
-				agentName,
-			) {
-
-				log.Printf(
-					"⛔ Agent certificate identity mismatch: %s",
-					agentName,
-				)
-
+			replacedConnection, rejection := registerAgentConnection(
+				registeredAgentConn,
+				cfg.AgentIdentityBindings,
+			)
+			if rejection != "" {
+				logAgentIdentityRejection(rejection, agentName, fingerprint)
+				closeAgentAuthorizationFailure(ws)
 				break
 			}
-
-			clientsMu.Lock()
-
-			if existing, exists :=
-				clients[agentName]; exists {
-
-				clientsMu.Unlock()
-
-				if existing != nil &&
-					existing.Conn != ws {
-
-					log.Printf(
-						"⛔ Duplicate agent rejected: %s",
-						agentName,
-					)
-				}
-
-				break
+			if replacedConnection != nil && replacedConnection.Conn != ws {
+				log.Printf("agent reconnect replaced previous connection agent=%q fingerprint=%s", agentName, fingerprint)
+				closeReplacedAgentConnection(replacedConnection)
 			}
-
-			registeredAgentConn := &AgentConnection{
-				Name:     agentName,
-				Conn:     ws,
-				LastSeen: time.Now(),
-			}
-
-			clients[agentName] =
-				registeredAgentConn
-
-			clientsMu.Unlock()
 
 			agentConnMu.Lock()
 			agentConn = registeredAgentConn
@@ -2386,6 +2572,10 @@ messageLoop:
 			)
 
 			break
+		}
+		if !currentAuthorizedAgentConnection(currentAgentName, agentConn, cfg.AgentIdentityBindings) {
+			log.Printf("agent connection rejected: identity is no longer active agent=%q fingerprint=%s", currentAgentName, agentConn.CertificateFingerprint)
+			break messageLoop
 		}
 
 		// ---------------------------------------------------------------------
@@ -2430,7 +2620,7 @@ messageLoop:
 
 				continue
 			}
-			if !validReportTelemetry(msg, currentAgentName) {
+			if !validAgentReportIdentity(msg, agentConn, cfg.AgentIdentityBindings) {
 				log.Printf("Invalid REPORT agent or telemetry: agent=%s status=%d", currentAgentName, msg.Status)
 				continue
 			}
@@ -2439,7 +2629,7 @@ messageLoop:
 				log.Printf("Invalid REPORT task_id: %q", msg.TaskID)
 				continue
 			}
-			if !claimReport(msg.TaskID, currentAgentName, target, time.Now()) {
+			if !claimReport(msg.TaskID, currentAgentName, agentConn.CertificateFingerprint, target, time.Now()) {
 				log.Printf("REPORT task authorization failed: agent=%s task_id=%s", currentAgentName, msg.TaskID)
 				continue
 			}
@@ -2820,7 +3010,9 @@ func main() {
 	if err := requireMTLSSetting(os.Getenv("MTLS_REQUIRED")); err != nil {
 		log.Fatal(err)
 	}
-	loadConfig()
+	if err := loadConfig(); err != nil {
+		log.Fatal(err)
+	}
 	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" || cfg.ClientCAFile == "" {
 		log.Fatal("Commander mTLS requires COMMANDER_TLS_CERT, COMMANDER_TLS_KEY, and COMMANDER_CLIENT_CA")
 	}
