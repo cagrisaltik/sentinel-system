@@ -152,7 +152,7 @@ func finishReport(taskID string, success bool) {
 }
 
 func validAgentMessageType(messageType string) bool {
-	return messageType == "RAPOR"
+	return messageType == "REPORT"
 }
 
 const maxReportTimeLength = 128
@@ -371,7 +371,7 @@ func initDB() {
 
 	if connStr == "" {
 		log.Fatal(
-			"DATABASE_URL tanımlı değil. MySQL bağlantısı yapılandırılmalı.",
+			"DATABASE_URL is not set. Configure the MySQL connection.",
 		)
 	}
 
@@ -381,7 +381,7 @@ func initDB() {
 
 	if err != nil {
 		log.Fatal(
-			"MySQL bağlantısı oluşturulamadı:",
+			"Could not configure the MySQL connection:",
 			err,
 		)
 	}
@@ -393,33 +393,33 @@ func initDB() {
 
 	if err = db.Ping(); err != nil {
 		log.Fatal(
-			"MySQL erişim hatası:",
+			"MySQL connection failed:",
 			err,
 		)
 	}
 
 	ensureDatabaseSchema()
 
-	fmt.Println("🗄️ MySQL: Bağlantı başarılı.")
-	fmt.Println("🐘 Commander: Veritabanı hazır.")
+	fmt.Println("🗄️ MySQL: Connection established.")
+	fmt.Println("🐘 Commander: Database is ready.")
 }
 
 func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate, error) {
-	// Önce sertifika + private key dosyalarını oku.
+	// Read the certificate and private key files first.
 	certPEM, err := os.ReadFile(certFile)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("TLS sertifikası okunamadı: %w", err)
+		return tls.Certificate{}, fmt.Errorf("Could not read TLS certificate: %w", err)
 	}
 
 	keyPEM, err := os.ReadFile(keyFile)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("TLS private key okunamadı: %w", err)
+		return tls.Certificate{}, fmt.Errorf("Could not read TLS private key: %w", err)
 	}
 
-	// PEM içerisindeki private key bloğunu bul.
+	// Find the private key block in the PEM data.
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
-		return tls.Certificate{}, errors.New("TLS private key geçerli PEM formatında değil")
+		return tls.Certificate{}, errors.New("TLS private key is not valid PEM")
 	}
 
 	var privateKey any
@@ -429,7 +429,7 @@ func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate,
 		// PKCS#8 encrypted private key.
 		if keyPassword == "" {
 			return tls.Certificate{}, errors.New(
-				"TLS private key şifreli fakat TLS_KEY_PASSWORD tanımlanmamış",
+				"TLS private key is encrypted, but TLS_KEY_PASSWORD is not set",
 			)
 		}
 
@@ -439,13 +439,13 @@ func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate,
 		)
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf(
-				"şifreli TLS private key çözülemedi: %w",
+				"Could not decrypt the encrypted TLS private key: %w",
 				err,
 			)
 		}
 
 	default:
-		// Şifresiz PKCS#8 / RSA / EC key desteği.
+		// Support unencrypted PKCS#8, RSA, and EC keys.
 		privateKey, err = x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 
 		if err != nil {
@@ -456,30 +456,30 @@ func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate,
 				privateKey = ecKey
 			} else {
 				return tls.Certificate{}, fmt.Errorf(
-					"TLS private key parse edilemedi: %w",
+					"Could not parse TLS private key: %w",
 					err,
 				)
 			}
 		}
 	}
 
-	// Sertifika zincirini TLS'in beklediği yapıya dönüştür.
+	// Convert the certificate chain to the format expected by TLS.
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
 		return tls.Certificate{}, errors.New(
-			"TLS sertifikası geçerli PEM formatında değil",
+			"TLS certificate is not valid PEM",
 		)
 	}
 
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"TLS sertifikası parse edilemedi: %w",
+			"Could not parse TLS certificate: %w",
 			err,
 		)
 	}
 
-	// tls.Certificate oluştur.
+	// Create a tls.Certificate.
 	tlsCert := tls.Certificate{
 		Certificate: [][]byte{
 			cert.Raw,
@@ -487,8 +487,8 @@ func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate,
 		PrivateKey: privateKey,
 	}
 
-	// Sertifika dosyasında intermediate chain varsa
-	// diğer PEM bloklarını da Certificate zincirine ekle.
+	// If the certificate file contains an intermediate chain,
+	// append the remaining PEM blocks to the certificate chain.
 	remaining := certPEM
 	_, remaining = pem.Decode(remaining)
 
@@ -502,7 +502,7 @@ func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate,
 			chainCert, parseErr := x509.ParseCertificate(block.Bytes)
 			if parseErr != nil {
 				return tls.Certificate{}, fmt.Errorf(
-					"TLS sertifika zinciri parse edilemedi: %w",
+					"Could not parse TLS certificate chain: %w",
 					parseErr,
 				)
 			}
@@ -578,7 +578,7 @@ func ensureDatabaseSchema() {
 	for _, query := range queries {
 		if _, err := db.Exec(query); err != nil {
 			log.Fatal(
-				"MySQL tablo oluşturma/doğrulama hatası:",
+				"MySQL schema creation/verification failed:",
 				err,
 			)
 		}
@@ -592,7 +592,7 @@ func ensureDatabaseSchema() {
 
 	if err != nil {
 		log.Fatal(
-			"Kullanıcı bilgisi okunamadı:",
+			"Could not read user records:",
 			err,
 		)
 	}
@@ -614,7 +614,7 @@ func createInitialAdmin() {
 
 	if defaultPass == "" {
 		log.Fatal(
-			"users tablosu boş ve ADMIN_INIT_PASS tanımlı değil.",
+			"The users table is empty and ADMIN_INIT_PASS is not set.",
 		)
 	}
 
@@ -625,7 +625,7 @@ func createInitialAdmin() {
 
 	if err != nil {
 		log.Fatal(
-			"Admin şifresi hashlenemedi:",
+			"Could not hash the admin password:",
 			err,
 		)
 	}
@@ -643,13 +643,13 @@ func createInitialAdmin() {
 
 	if err != nil {
 		log.Fatal(
-			"Admin kullanıcısı oluşturulamadı:",
+			"Could not create the admin user:",
 			err,
 		)
 	}
 
 	fmt.Println(
-		"🔑 İlk kullanıcı oluşturuldu:",
+		"🔑 Initial user created:",
 		defaultUser,
 	)
 }
@@ -859,7 +859,7 @@ func authMiddleware(
 			) {
 				http.Error(
 					w,
-					"Oturum geçersiz veya süresi dolmuş",
+					"Session is invalid or expired",
 					http.StatusUnauthorized,
 				)
 
@@ -998,7 +998,7 @@ func handleLogin(
 	if !loginAllowed(ip) {
 		http.Error(
 			w,
-			"Çok fazla başarısız giriş denemesi.",
+			"Too many failed login attempts.",
 			http.StatusTooManyRequests,
 		)
 
@@ -1019,7 +1019,7 @@ func handleLogin(
 
 		http.Error(
 			w,
-			"Geçersiz veri",
+			"Invalid data",
 			http.StatusBadRequest,
 		)
 
@@ -1039,7 +1039,7 @@ func handleLogin(
 
 		http.Error(
 			w,
-			"Giriş başarısız",
+			"Login failed",
 			http.StatusUnauthorized,
 		)
 
@@ -1071,7 +1071,7 @@ func handleLogin(
 
 		http.Error(
 			w,
-			"Giriş başarısız",
+			"Login failed",
 			http.StatusUnauthorized,
 		)
 
@@ -1086,7 +1086,7 @@ func handleLogin(
 	if err != nil {
 		http.Error(
 			w,
-			"Oturum oluşturulamadı",
+			"Could not create session",
 			http.StatusInternalServerError,
 		)
 
@@ -1233,7 +1233,7 @@ func startTaskScheduler() {
 
 				err := agent.Conn.WriteJSON(
 					models.Command{
-						Type:      "PING_ISTEGI",
+						Type:      "PING_REQUEST",
 						TaskID:    taskID,
 						Agent:     agentName,
 						Target:    targetURL,
@@ -1288,7 +1288,7 @@ func handleTargets(
 		if err != nil {
 			http.Error(
 				w,
-				"Veri alınamadı",
+				"Could not retrieve data",
 				http.StatusInternalServerError,
 			)
 
@@ -1320,7 +1320,7 @@ func handleTargets(
 		if err := rows.Err(); err != nil {
 			http.Error(
 				w,
-				"Veri okunamadı",
+				"Could not read data",
 				http.StatusInternalServerError,
 			)
 
@@ -1347,7 +1347,7 @@ func handleTargets(
 
 			http.Error(
 				w,
-				"Geçersiz veri",
+				"Invalid data",
 				http.StatusBadRequest,
 			)
 
@@ -1369,7 +1369,7 @@ func handleTargets(
 		) {
 			http.Error(
 				w,
-				"Geçersiz agent adı",
+				"Invalid agent name",
 				http.StatusBadRequest,
 			)
 
@@ -1381,7 +1381,7 @@ func handleTargets(
 		) {
 			http.Error(
 				w,
-				"Geçersiz hedef",
+				"Invalid target",
 				http.StatusBadRequest,
 			)
 
@@ -1407,7 +1407,7 @@ func handleTargets(
 
 			http.Error(
 				w,
-				"Kayıt hatası",
+				"Could not save record",
 				http.StatusInternalServerError,
 			)
 
@@ -1431,7 +1431,7 @@ func handleTargets(
 
 			http.Error(
 				w,
-				"Geçersiz ID",
+				"Invalid ID",
 				http.StatusBadRequest,
 			)
 
@@ -1449,7 +1449,7 @@ func handleTargets(
 		if err != nil {
 			http.Error(
 				w,
-				"Silme işlemi başarısız",
+				"Could not delete record",
 				http.StatusInternalServerError,
 			)
 
@@ -1462,7 +1462,7 @@ func handleTargets(
 		if affected == 0 {
 			http.Error(
 				w,
-				"Kayıt bulunamadı",
+				"Record not found",
 				http.StatusNotFound,
 			)
 
@@ -1523,7 +1523,7 @@ func getHistory(
 
 			http.Error(
 				w,
-				"Geçersiz saat değeri",
+				"Invalid hours value",
 				http.StatusBadRequest,
 			)
 
@@ -1556,7 +1556,7 @@ func getHistory(
 	if err != nil {
 		http.Error(
 			w,
-			"Veri çekilemedi",
+			"Could not retrieve data",
 			http.StatusInternalServerError,
 		)
 
@@ -1602,7 +1602,7 @@ func getHistory(
 
 		http.Error(
 			w,
-			"Veri okunamadı",
+			"Could not read data",
 			http.StatusInternalServerError,
 		)
 
@@ -1664,7 +1664,7 @@ func handleExport(
 	if err != nil {
 		http.Error(
 			w,
-			"Hata",
+			"Error",
 			http.StatusInternalServerError,
 		)
 
@@ -1676,7 +1676,7 @@ func handleExport(
 	f := excelize.NewFile()
 
 	sheetName :=
-		"Sentinel Raporu"
+		"Sentinel Report"
 
 	if err := f.SetSheetName(
 		"Sheet1",
@@ -1685,7 +1685,7 @@ func handleExport(
 
 		http.Error(
 			w,
-			"Excel oluşturulamadı",
+			"Could not create Excel file",
 			http.StatusInternalServerError,
 		)
 
@@ -1775,7 +1775,7 @@ func handleExport(
 	_ = f.SetCellValue(
 		sheetName,
 		"A1",
-		"SENTINEL SİSTEM RAPORU",
+		"SENTINEL SYSTEM REPORT",
 	)
 
 	_ = f.SetCellStyle(
@@ -1793,11 +1793,11 @@ func handleExport(
 
 	headers := []string{
 		"ID",
-		"Zaman",
-		"Ajan",
-		"Hedef",
-		"Durum",
-		"Gecikme",
+		"Time",
+		"Agent",
+		"Target",
+		"Status",
+		"Latency",
 		"CPU %",
 		"RAM %",
 		"Disk %",
@@ -1994,7 +1994,7 @@ func handleExport(
 
 	w.Header().Set(
 		"Content-Disposition",
-		"attachment; filename=sentinel_rapor.xlsx",
+		"attachment; filename=sentinel_report.xlsx",
 	)
 
 	if err := f.Write(w); err != nil {
@@ -2017,18 +2017,18 @@ var upgrader = websocket.Upgrader{
 
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 
-		log.Println("🔎 Gelen Origin:", origin)
+		log.Println("🔎 Received Origin:", origin)
 
 		for allowed := range cfg.AllowedOrigins {
-			log.Println("🔎 İzin verilen Origin:", allowed)
+			log.Println("🔎 Allowed Origin:", allowed)
 		}
 
 		if cfg.AllowedOrigins[origin] {
-			log.Println("✅ Origin kabul edildi:", origin)
+			log.Println("✅ Origin accepted:", origin)
 			return true
 		}
 
-		log.Println("⚠️ Bloklanan WebSocket Origin:", origin)
+		log.Println("⚠️ Blocked WebSocket Origin:", origin)
 
 		return false
 	},
@@ -2136,7 +2136,7 @@ func handleConnections(
 
 		http.Error(
 			w,
-			"WebSocket bağlantı limiti dolu",
+			"WebSocket connection limit reached",
 			http.StatusServiceUnavailable,
 		)
 
@@ -2154,11 +2154,11 @@ func handleConnections(
 	// -------------------------------------------------------------------------
 
 	if r.TLS == nil {
-		http.Error(w, "TLS gereklidir", http.StatusUpgradeRequired)
+		http.Error(w, "TLS is required", http.StatusUpgradeRequired)
 		return
 	}
 	if len(r.TLS.PeerCertificates) == 0 {
-		http.Error(w, "Client certificate gereklidir", http.StatusUnauthorized)
+		http.Error(w, "A client certificate is required", http.StatusUnauthorized)
 		return
 	}
 
@@ -2281,7 +2281,7 @@ messageLoop:
 			) {
 
 				log.Printf(
-					"WebSocket kapandı (%s): %v",
+					"WebSocket closed (%s): %v",
 					currentAgentName,
 					err,
 				)
@@ -2309,7 +2309,7 @@ messageLoop:
 			) {
 
 				log.Println(
-					"⛔ Geçersiz agent adı:",
+					"⛔ Invalid agent name:",
 					agentName,
 				)
 
@@ -2367,7 +2367,7 @@ messageLoop:
 				agentName
 
 			log.Printf(
-				"🔵 Agent bağlandı: %s",
+				"🔵 Agent connected: %s",
 				currentAgentName,
 			)
 
@@ -2382,7 +2382,7 @@ messageLoop:
 			agentConn == nil {
 
 			log.Println(
-				"⛔ REGISTER olmadan mesaj gönderildi",
+				"⛔ Message received before REGISTER",
 			)
 
 			break
@@ -2398,7 +2398,7 @@ messageLoop:
 		agentConn.LastSeenMu.Unlock()
 
 		// ---------------------------------------------------------------------
-		// RAPOR
+		// REPORT
 		// ---------------------------------------------------------------------
 
 		if !validAgentMessageType(msg.Type) {
@@ -2407,13 +2407,13 @@ messageLoop:
 		}
 
 		switch msg.Type {
-		case "RAPOR":
+		case "REPORT":
 
 			if len(msg.Target) > 2048 ||
 				len(msg.Time) > maxReportTimeLength {
 
 				log.Println(
-					"⛔ RAPOR mesajı çok büyük",
+					"⛔ REPORT message is too large",
 				)
 
 				continue
@@ -2424,23 +2424,23 @@ messageLoop:
 			if target != msg.Target || !validTarget(target) {
 
 				log.Println(
-					"⛔ Geçersiz RAPOR hedefi:",
+					"⛔ Invalid REPORT target:",
 					target,
 				)
 
 				continue
 			}
 			if !validReportTelemetry(msg, currentAgentName) {
-				log.Printf("Invalid RAPOR agent or telemetry: agent=%s status=%d", currentAgentName, msg.Status)
+				log.Printf("Invalid REPORT agent or telemetry: agent=%s status=%d", currentAgentName, msg.Status)
 				continue
 			}
 
 			if !validTaskID(msg.TaskID) {
-				log.Printf("Geçersiz RAPOR task_id: %q", msg.TaskID)
+				log.Printf("Invalid REPORT task_id: %q", msg.TaskID)
 				continue
 			}
 			if !claimReport(msg.TaskID, currentAgentName, target, time.Now()) {
-				log.Printf("RAPOR task authorization failed: agent=%s task_id=%s", currentAgentName, msg.TaskID)
+				log.Printf("REPORT task authorization failed: agent=%s task_id=%s", currentAgentName, msg.TaskID)
 				continue
 			}
 
@@ -2505,7 +2505,7 @@ messageLoop:
 		clientsMu.Unlock()
 
 		log.Printf(
-			"🔴 Agent ayrıldı: %s",
+			"🔴 Agent disconnected: %s",
 			currentAgentName,
 		)
 	}
@@ -2524,7 +2524,7 @@ func loadClientCAPool() (
 
 		return nil,
 			fmt.Errorf(
-				"COMMANDER_CLIENT_CA ayarlanmamış",
+				"COMMANDER_CLIENT_CA is not set",
 			)
 	}
 
@@ -2537,7 +2537,7 @@ func loadClientCAPool() (
 
 		return nil,
 			fmt.Errorf(
-				"client CA okunamadı: %w",
+				"Could not read client CA: %w",
 				err,
 			)
 	}
@@ -2551,7 +2551,7 @@ func loadClientCAPool() (
 
 		return nil,
 			fmt.Errorf(
-				"client CA sertifikası parse edilemedi",
+				"Could not parse client CA certificate",
 			)
 	}
 
@@ -2568,7 +2568,7 @@ func buildTLSConfig() (
 
 		return nil,
 			fmt.Errorf(
-				"TLS certificate/key yapılandırılmamış",
+				"TLS certificate/key are not configured",
 			)
 	}
 
@@ -2581,7 +2581,7 @@ func buildTLSConfig() (
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"TLS sertifikası yüklenemedi: %w",
+			"Could not load TLS certificate: %w",
 			err,
 		)
 	}
@@ -2786,7 +2786,7 @@ func shutdownOnSignal(
 	<-stop
 
 	log.Println(
-		"🛑 Commander kapanıyor...",
+		"🛑 Commander is shutting down...",
 	)
 
 	ctx, cancel :=
@@ -2804,7 +2804,7 @@ func shutdownOnSignal(
 	}
 
 	log.Println(
-		"Commander kapandı.",
+		"Commander has shut down.",
 	)
 }
 
@@ -2814,7 +2814,7 @@ func shutdownOnSignal(
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println(".env bulunamadı, environment variables kullanılacak.")
+		log.Println(".env not found; using environment variables.")
 	}
 
 	if err := requireMTLSSetting(os.Getenv("MTLS_REQUIRED")); err != nil {
@@ -2839,21 +2839,21 @@ func main() {
 
 	tlsConfig, err := buildTLSConfig()
 	if err != nil {
-		log.Fatal("TLS yapılandırma hatası:", err)
+		log.Fatal("TLS configuration error:", err)
 	}
 	server.TLSConfig = tlsConfig
 
-	fmt.Println("🔐 TLS: AKTİF")
+	fmt.Println("🔐 TLS: ACTIVE")
 	fmt.Println("🔒 Minimum TLS: 1.3")
-	fmt.Println("🛡️ mTLS: AKTİF")
+	fmt.Println("🛡️ mTLS: ACTIVE")
 	fmt.Println("🗄️ Database: MySQL")
 	fmt.Println("🌐 Commander:", "https://"+cfg.Host+":"+cfg.Port)
 
 	ln, err := tls.Listen("tcp", cfg.Host+":"+cfg.Port, tlsConfig)
 	if err != nil {
-		log.Fatal("TLS listener oluşturulamadı:", err)
+		log.Fatal("Could not create TLS listener:", err)
 	}
 	if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal("HTTPS server hatası:", err)
+		log.Fatal("HTTPS server error:", err)
 	}
 }
