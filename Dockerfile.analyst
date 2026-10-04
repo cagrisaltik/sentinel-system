@@ -1,24 +1,22 @@
-FROM golang:alpine AS builder
+FROM golang:1.25.1-alpine AS builder
 
-WORKDIR /app
-
-# 1. KRİTİK DÜZELTME: Git'i yüklüyoruz. 
-# Go modüllerini indirmek için Git gereklidir, Alpine'de yüklü gelmez.
-RUN apk add --no-cache git
-
-# 2. Modül dosyalarını kopyala
+WORKDIR /src
 COPY go.mod go.sum ./
-
-# 3. Bağımlılıkları indir (Artık hata vermez)
 RUN go mod download
 
-# 4. Kaynak kodları kopyala ve derle
-COPY . .
-RUN go build -o analyst cmd/analyst/main.go
+COPY cmd/analyst ./cmd/analyst
+COPY web/analyst ./web/analyst
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/analyst ./cmd/analyst
 
-# --- Final Sahnesi ---
 FROM alpine:latest
-WORKDIR /root/
-COPY --from=builder /app/web ./web 
-COPY --from=builder /app/analyst .
-CMD ["./analyst"]
+
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S analyst \
+    && adduser -S -G analyst analyst
+WORKDIR /app
+COPY --from=builder --chown=analyst:analyst /out/analyst ./analyst
+COPY --from=builder --chown=analyst:analyst /src/web/analyst ./web/analyst
+
+USER analyst:analyst
+EXPOSE 3000
+ENTRYPOINT ["./analyst"]

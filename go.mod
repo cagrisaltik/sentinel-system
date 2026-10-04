@@ -7,7 +7,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
-	github.com/lib/pq v1.10.9
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/xuri/excelize/v2 v2.10.0
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78

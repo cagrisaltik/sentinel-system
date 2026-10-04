@@ -11,6 +11,20 @@ jobs:
     - name: Kodları Çek
       uses: actions/checkout@v4
 
+    - name: Go kurulumu
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Testler
+      run: go test ./...
+
+    - name: Go servislerini derle
+      run: |
+        go build -o /tmp/analyst ./cmd/analyst
+        go build -o /tmp/commander ./cmd/commander
+        go build -o /tmp/scout ./cmd/scout
+
     - name: Docker Hub Giriş
       uses: docker/login-action@v3
       with:
