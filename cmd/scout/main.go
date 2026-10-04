@@ -28,8 +28,8 @@ import (
 	"github.com/youmark/pkcs8"
 )
 
-// GÜVENLİK: Command Injection Koruması
-// Yalnızca domain/IP benzeri hedeflere izin verilir.
+// SECURITY: Command injection protection
+// Only domain- or IP-like targets are allowed.
 var targetRegex = regexp.MustCompile(`^[a-zA-Z0-9.:\_-]+$`)
 
 var (
@@ -135,7 +135,7 @@ func claimTask(taskID string, issuedAt, expiresAt, now time.Time) bool {
 }
 
 func authorizePing(msg models.Command, agentName string, now time.Time) bool {
-	if msg.Type != "PING_ISTEGI" || msg.Agent != agentName || !targetRegex.MatchString(msg.Target) || !safeTarget(msg.Target) {
+	if msg.Type != "PING_REQUEST" || msg.Agent != agentName || !targetRegex.MatchString(msg.Target) || !safeTarget(msg.Target) {
 		return false
 	}
 	issuedAt, err := time.Parse(time.RFC3339Nano, msg.IssuedAt)
@@ -194,7 +194,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 	certPEM, err := os.ReadFile(certFile)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"client certificate okunamadı: %w",
+			"Could not read client certificate: %w",
 			err,
 		)
 	}
@@ -202,7 +202,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 	keyPEM, err := os.ReadFile(keyFile)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"client private key okunamadı: %w",
+			"Could not read client private key: %w",
 			err,
 		)
 	}
@@ -210,7 +210,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"private key PEM olarak parse edilemedi",
+			"Could not parse private key PEM",
 		)
 	}
 
@@ -221,7 +221,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 	case "ENCRYPTED PRIVATE KEY":
 		if password == "" {
 			return tls.Certificate{}, fmt.Errorf(
-				"TLS client key şifreli ancak TLS_CLIENT_KEY_PASSWORD ayarlanmamış",
+				"TLS client key is encrypted, but TLS_CLIENT_KEY_PASSWORD is not set",
 			)
 		}
 
@@ -233,7 +233,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf(
-				"şifreli client private key çözülemedi: %w",
+				"Could not decrypt encrypted client private key: %w",
 				err,
 			)
 		}
@@ -246,7 +246,7 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf(
-				"PKCS#8 private key parse edilemedi: %w",
+				"Could not parse PKCS#8 private key: %w",
 				err,
 			)
 		}
@@ -259,31 +259,31 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf(
-				"EC private key parse edilemedi: %w",
+				"Could not parse EC private key: %w",
 				err,
 			)
 		}
 
 	default:
 		return tls.Certificate{}, fmt.Errorf(
-			"desteklenmeyen private key tipi: %s",
+			"Unsupported private key type: %s",
 			keyBlock.Type,
 		)
 	}
 
-	// Scout sertifikasının public key'i ile
-	// private key'in gerçekten eşleştiğini kontrol et.
+	// Verify that the Scout certificate public key and
+	// private key actually match.
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"client certificate PEM olarak parse edilemedi",
+			"Could not parse client certificate PEM",
 		)
 	}
 
 	x509Cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf(
-			"client certificate parse edilemedi: %w",
+			"Could not parse client certificate: %w",
 			err,
 		)
 	}
@@ -291,26 +291,26 @@ func loadClientCertificate(certFile, keyFile, password string) (tls.Certificate,
 	ecKey, ok := privateKey.(*ecdsa.PrivateKey)
 	if !ok {
 		return tls.Certificate{}, fmt.Errorf(
-			"client private key beklenen ECDSA anahtar değil",
+			"client private key is not the expected ECDSA key",
 		)
 	}
 
 	certPublicKey, ok := x509Cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return tls.Certificate{}, fmt.Errorf(
-			"client certificate beklenen ECDSA anahtar değil",
+			"client certificate does not contain the expected ECDSA public key",
 		)
 	}
 
 	if certPublicKey.X.Cmp(ecKey.PublicKey.X) != 0 ||
 		certPublicKey.Y.Cmp(ecKey.PublicKey.Y) != 0 {
 		return tls.Certificate{}, fmt.Errorf(
-			"client certificate ile private key eşleşmiyor",
+			"client certificate does not match the private key",
 		)
 	}
 
-	// tls.X509KeyPair encrypted key kabul etmez.
-	// Bunun yerine Certificate ve PrivateKey'i doğrudan oluşturuyoruz.
+	// tls.X509KeyPair does not accept encrypted keys.
+	// Construct the Certificate and PrivateKey directly instead.
 	return tls.Certificate{
 		Certificate: [][]byte{
 			x509Cert.Raw,
@@ -333,8 +333,8 @@ func main() {
 	caFile := config.caFile
 	agentName := config.agentName
 
-	// Güvenlik:
-	// Artık hardcoded/fallback Agent Secret kullanılmıyor.
+	// Security:
+	// No hard-coded or fallback Agent Secret is used.
 
 	// ============================================================
 	// TLS / CA
@@ -342,13 +342,13 @@ func main() {
 
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
-		log.Fatal("CA sertifikası okunamadı:", err)
+		log.Fatal("Could not read CA certificate:", err)
 	}
 
 	rootCAs := x509.NewCertPool()
 
 	if !rootCAs.AppendCertsFromPEM(caPEM) {
-		log.Fatal("CA sertifikası yüklenemedi:", caFile)
+		log.Fatal("Could not load CA certificate:", caFile)
 	}
 
 	// ============================================================
@@ -362,31 +362,31 @@ func main() {
 	)
 
 	if err != nil {
-		log.Fatal("mTLS client sertifikası yüklenemedi:", err)
+		log.Fatal("Could not load mTLS client certificate:", err)
 	}
 
-	log.Printf("🔐 mTLS client sertifikası hazır: %s", agentName)
+	log.Printf("🔐 mTLS client certificate is ready: %s", agentName)
 
 	// ============================================================
 	// TLS CONFIGURATION
 	// ============================================================
 
 	tlsConfig := &tls.Config{
-		// Yalnızca TLS 1.3
+		// TLS 1.3 only
 		MinVersion: tls.VersionTLS13,
 
-		// Sentinel Root CA'ya güven.
+		// Trust the Sentinel Root CA.
 		RootCAs: rootCAs,
 
-		// Commander sertifikasının SAN değerini doğrula.
+		// Verify the SAN on the Commander certificate.
 		ServerName: "commander.sentinel.test",
 
-		// Hostname doğrulamasını kesinlikle kapatma.
+		// Never disable hostname verification.
 		InsecureSkipVerify: false,
 
 		// Scout-01 client certificate.
-		// Commander mTLS istediğinde bu sertifika
-		// TLS handshake sırasında sunulacak.
+		// Present this certificate when Commander requests mTLS.
+		// It is sent during the TLS handshake.
 		Certificates: []tls.Certificate{
 			clientCert,
 		},
@@ -399,7 +399,7 @@ func main() {
 	u := strings.TrimRight(serverURL, "/") + "/ws"
 
 	fmt.Printf(
-		"🔌 Bağlanıyor: %s (Agent: %s)\n",
+		"Connecting to %s (Agent: %s)\n",
 		u,
 		agentName,
 	)
@@ -415,7 +415,7 @@ func main() {
 
 		headers := http.Header{}
 
-		// Commander tarafındaki Origin kontrolüyle eşleşmeli.
+		// This must match the Origin check on Commander.
 		headers.Set(
 			"Origin",
 			"https://commander.sentinel.test:8080",
@@ -428,7 +428,7 @@ func main() {
 		dialer := websocket.Dialer{
 			TLSClientConfig: tlsConfig,
 
-			// Bağlantı kurulamazsa sonsuza kadar bekleme.
+			// Do not wait forever if the connection cannot be established.
 			HandshakeTimeout: 10 * time.Second,
 		}
 
@@ -436,7 +436,7 @@ func main() {
 
 		if err != nil {
 			log.Println(
-				"Bağlantı hatası, 5sn sonra tekrar denenecek:",
+				"Connection failed; retrying in 5 seconds:",
 				err,
 			)
 
@@ -444,14 +444,14 @@ func main() {
 			continue
 		}
 
-		fmt.Println("✅ Commander bağlantısı kuruldu.")
+		fmt.Println("✅ Connected to Commander.")
 
 		// --------------------------------------------------------
 		// REGISTER
 		// --------------------------------------------------------
 
 		if err := configureScoutWebSocket(c, wsReadWait); err != nil {
-			log.Println("WebSocket read deadline ayarlanamadı:", err)
+			log.Println("Could not set WebSocket read deadline:", err)
 			c.Close()
 			time.Sleep(2 * time.Second)
 			continue
@@ -463,14 +463,14 @@ func main() {
 		})
 
 		if err != nil {
-			log.Println("REGISTER gönderilemedi:", err)
+			log.Println("Could not send REGISTER:", err)
 			c.Close()
 
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		fmt.Println("🛰️ Scout kayıt gönderdi:", agentName)
+		fmt.Println("🛰️ Scout sent registration:", agentName)
 
 		// --------------------------------------------------------
 		// COMMAND LOOP
@@ -486,15 +486,15 @@ func main() {
 
 				if err != nil {
 					log.Println(
-						"Bağlantı koptu:",
+						"Connection lost:",
 						err,
 					)
 
 					return
 				}
 
-				if msg.Type != "PING_ISTEGI" {
-					log.Printf("Bilinmeyen Commander mesaj tipi reddedildi: %q", msg.Type)
+				if msg.Type != "PING_REQUEST" {
+					log.Printf("Rejected unknown Commander message type: %q", msg.Type)
 					return
 				}
 
@@ -502,20 +502,20 @@ func main() {
 				// PING COMMAND
 				// ------------------------------------------------
 
-				if msg.Type == "PING_ISTEGI" {
+				if msg.Type == "PING_REQUEST" {
 					if !authorizePing(msg, agentName, time.Now()) {
-						log.Printf("Geçersiz, süresi dolmuş veya yinelenen görev reddedildi: %s", msg.TaskID)
+						log.Printf("Rejected invalid, expired, or duplicate task: %s", msg.TaskID)
 						continue
 					}
 
 					fmt.Printf(
-						"🎯 Görev: %s\n",
+						"🎯 Task: %s\n",
 						msg.Target,
 					)
 
-					// Güvenlik:
-					// Command injection riskini azaltmak için
-					// hedef whitelist kontrolü.
+					// Security:
+					// To reduce command injection risk,
+					// validate the target against the allowlist.
 					start := time.Now()
 
 					var cmd *exec.Cmd
@@ -561,7 +561,7 @@ func main() {
 					// ------------------------------------------------
 
 					resp := models.Command{
-						Type:   "RAPOR",
+						Type:   "REPORT",
 						TaskID: msg.TaskID,
 						Target: msg.Target,
 						Status: status,
@@ -577,7 +577,7 @@ func main() {
 
 					if err := writeScoutJSON(c, resp); err != nil {
 						log.Println(
-							"Rapor gönderilemedi:",
+							"Could not send report:",
 							err,
 						)
 

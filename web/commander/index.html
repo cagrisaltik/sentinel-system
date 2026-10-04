@@ -20,7 +20,7 @@
         .brand { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; gap: 10px; display: flex; align-items: center; }
         .brand i { color: var(--accent-color); }
 
-        /* FİLTRE BUTONLARI */
+        /* FILTER BUTTONS */
         .filter-group { display: flex; gap: 5px; background: rgba(0,0,0,0.3); padding: 4px; border-radius: 8px; border: 1px solid var(--border-color); }
         .filter-btn { background: transparent; color: var(--text-muted); padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: 0.2s; }
         .filter-btn:hover { color: white; background: rgba(255,255,255,0.05); }
@@ -32,7 +32,7 @@
         .stat-value { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
         .stat-title { color: var(--text-muted); font-size: 0.9rem; }
 
-        /* GRAFİK DÜZENİ */
+        /* CHART LAYOUT */
         .main-chart-container { grid-column: span 3; grid-row: span 2; min-height: 400px; position: relative; }
         .pie-chart-container { grid-column: span 1; min-height: 250px; position: relative; display: flex; align-items: center; justify-content: center; }
         .chart-wrapper { position: relative; height: 100%; width: 100%; flex-grow: 1; }
@@ -40,7 +40,7 @@
         .table-container { grid-column: span 1; grid-row: span 2; overflow: hidden; }
         .table-wrapper { overflow-y: auto; margin-top: 10px; height: 100%; }
 
-        /* Görev Yöneticisi ve Diğerleri */
+        /* Task Manager and Other Elements */
         .task-manager { grid-column: span 4; display: flex; flex-direction: row; gap: 20px; align-items: flex-start; }
         .task-form { flex: 1; display: flex; gap: 10px; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 12px; width: 100%; }
         .task-list { flex: 2; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
@@ -64,49 +64,49 @@
         <div class="brand"><i class="fa-solid fa-shield-halved"></i> SENTINEL <span style="font-weight: 300; opacity: 0.6;">ANALYTICS</span></div>
         
         <div class="filter-group">
-            <button class="filter-btn active" onclick="setMode('live')">🔴 Canlı</button>
+            <button class="filter-btn active" onclick="setMode('live')">🔴 Live</button>
             <button class="filter-btn" onclick="setMode('1')">1 Saat</button>
             <button class="filter-btn" onclick="setMode('6')">6 Saat</button>
             <button class="filter-btn" onclick="setMode('24')">24 Saat</button>
 
             <button class="filter-btn" style="background: #10b981; color: white; margin-left: 10px;" onclick="downloadExcel()">
-                <i class="fa-solid fa-file-excel"></i> Rapor İndir
+                <i class="fa-solid fa-file-excel"></i> Download Report
             </button>
         </div>
     </header>
 
     <div class="dashboard-grid">
-        <div class="card stat-card"> <span class="stat-title">Toplam Kayıt</span> <span class="stat-value" id="totalScans">0</span> </div>
-        <div class="card stat-card"> <span class="stat-title">Ort. Gecikme</span> <span class="stat-value" id="avgLatency">0ms</span> </div>
-        <div class="card stat-card"> <span class="stat-title">Sistem Sağlığı</span> <span class="stat-value" id="systemHealth" style="color: var(--success-color);">%100</span> </div>
-        <div class="card stat-card"> <span class="stat-title">Canlı Ajanlar</span> <span class="stat-value" id="activeAgents">0</span> </div>
+        <div class="card stat-card"> <span class="stat-title">Total Records</span> <span class="stat-value" id="totalScans">0</span> </div>
+        <div class="card stat-card"> <span class="stat-title">Avg. Latency</span> <span class="stat-value" id="avgLatency">0ms</span> </div>
+        <div class="card stat-card"> <span class="stat-title">System Health</span> <span class="stat-value" id="systemHealth" style="color: var(--success-color);">%100</span> </div>
+        <div class="card stat-card"> <span class="stat-title">Active Agents</span> <span class="stat-value" id="activeAgents">0</span> </div>
 
         <div class="card task-manager">
             <div class="task-form">
-                <select id="targetAgent"> <option value="">Ajan Yükleniyor...</option> </select>
-                <input type="text" id="targetUrl" placeholder="Hedef (Örn: 1.1.1.1:53 veya google.com)">
-                <button onclick="addTask()">+ Ekle</button>
+                <select id="targetAgent"> <option value="">Loading agents...</option> </select>
+                <input type="text" id="targetUrl" placeholder="Target (e.g. 1.1.1.1:53 or google.com)">
+                <button onclick="addTask()">+ Add</button>
             </div>
             <div class="task-list" id="taskList"></div>
         </div>
 
         <div class="card main-chart-container">
-            <h3 style="margin-bottom: 15px;">📊 Gecikme Analizi</h3>
+            <h3 style="margin-bottom: 15px;">📊 Latency Analysis</h3>
             <div class="chart-wrapper"><canvas id="mainChart"></canvas></div>
         </div>
 
         <div class="card pie-chart-container">
-            <h3 style="position: absolute; top: 15px; left: 15px; margin: 0; font-size: 1rem;">Uptime Oranı</h3>
+            <h3 style="position: absolute; top: 15px; left: 15px; margin: 0; font-size: 1rem;">Uptime Ratio</h3>
             <div style="height: 180px; width: 180px;">
                 <canvas id="pieChart"></canvas>
             </div>
         </div>
 
         <div class="card table-container">
-            <h3 style="margin-bottom: 10px;">📋 Kayıtlar</h3>
+            <h3 style="margin-bottom: 10px;">📋 Records</h3>
             <div class="table-wrapper">
                 <table id="logTable">
-                    <thead><tr><th>Ajan</th><th>Hedef</th><th>Durum</th><th>Ms</th></tr></thead>
+                    <thead><tr><th>Agent</th><th>Target</th><th>Status</th><th>Ms</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -118,33 +118,33 @@ function downloadExcel() {
             window.location.href = '/api/export';
         }
 
-        // --- AYARLAR ---
+        // --- SETTINGS ---
         let currentMode = 'live'; 
         let liveInterval = null;
 
-        // Ajanlar için Renk Havuzu (Neon Tonlar)
+        // Neon color palette for agents
         const colorPalette = [
-            '#3b82f6', // Mavi
-            '#10b981', // Yeşil
-            '#f59e0b', // Turuncu
-            '#ec4899', // Pembe
-            '#8b5cf6', // Mor
-            '#ef4444', // Kırmızı
+            '#3b82f6', // Blue
+            '#10b981', // Green
+            '#f59e0b', // Orange
+            '#ec4899', // Pink
+            '#8b5cf6', // Purple
+            '#ef4444', // Red
             '#06b6d4', // Cyan
         ];
 
-        // Ajan ismine göre sabit renk bulucu
+        // Get a consistent color for each agent name
         const agentColors = {};
         function getColorForAgent(agentName) {
             if (!agentColors[agentName]) {
-                // Sıradaki rengi seç
+                // Select the next color
                 const index = Object.keys(agentColors).length % colorPalette.length;
                 agentColors[agentName] = colorPalette[index];
             }
             return agentColors[agentName];
         }
 
-        // --- BUTON İŞLEMLERİ ---
+        // --- BUTTON ACTIONS ---
         function setMode(mode) {
             currentMode = mode;
             document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
@@ -159,12 +159,12 @@ function downloadExcel() {
             }
         }
 
-        // --- GRAFİK KURULUMLARI ---
+        // --- CHART SETUP ---
         const ctx = document.getElementById('mainChart').getContext('2d');
         
         const mainChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: [], datasets: [] }, // Veri dinamik dolacak
+            data: { labels: [], datasets: [] }, // Populated dynamically
             options: { 
                 responsive: true, 
                 maintainAspectRatio: false, 
@@ -175,7 +175,7 @@ function downloadExcel() {
                 },
                 plugins: { 
                     legend: { 
-                        display: true, // ARTIK EFSANE AÇIK (Hangi renk kimin?)
+                        display: true, // Show which color belongs to each agent
                         labels: { color: '#a1a1aa', font: { family: 'JetBrains Mono' } }
                     },
                     tooltip: {
@@ -194,13 +194,13 @@ function downloadExcel() {
         const pieChart = new Chart(pieCtx, {
             type: 'doughnut',
             data: {
-                labels: ['Başarılı', 'Hatalı'],
+                labels: ['Successful', 'Failed'],
                 datasets: [{ data: [100, 0], backgroundColor: ['#10b981', '#ef4444'], borderWidth: 0 }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, cutout: '70%' }
         });
 
-        // --- VERİ ÇEKME ---
+        // --- FETCH DATA ---
         async function fetchHistory(hours) {
             try {
                 const res = await fetch(`/api/history?hours=${hours}`);
@@ -217,16 +217,16 @@ function downloadExcel() {
             } catch (e) {}
         }
 
-        // --- ANA RENDER FONKSİYONU ---
+        // --- MAIN RENDER FUNCTION ---
         function renderData(data) {
             if (!data || data.length === 0) return;
 
-            // 1. İstatistikler
+            // 1. Statistics
             document.getElementById('totalScans').innerText = data.length;
             let totalLatency = 0;
             let successCount = 0;
             
-            // Canlı Ajan Kontrolü
+            // Check for active agents
             const now = new Date();
             const activeSet = new Set();
             data.forEach(d => {
@@ -245,16 +245,16 @@ function downloadExcel() {
             pieChart.data.datasets[0].data = [successCount, data.length - successCount];
             pieChart.update();
 
-            // 2. Tablo (Karışık gelmesin, en yeniler üstte)
+            // 2. Table (show the newest entries first)
             const tableBody = document.querySelector("#logTable tbody");
             tableBody.innerHTML = "";
-            // Veri ID DESC geliyor (Yeniden eskiye), tablo için mükemmel.
+            // Data is ordered by descending ID, from newest to oldest.
             data.slice(0, 7).forEach(log => {
                 const statusClass = log.status === 200 ? 'status-ok' : 'status-err';
                 let cpuClass = log.cpu > 80 ? 'sys-crit' : (log.cpu > 50 ? 'sys-warn' : '');
                 let ramClass = log.ram > 80 ? 'sys-crit' : (log.ram > 60 ? 'sys-warn' : '');
                 
-                // Ajanın rengini bul ve isminin yanına nokta koy
+                // Find the agent's color and add a dot beside its name
                 const color = getColorForAgent(log.agent);
                 
                 tableBody.innerHTML += `<tr>
@@ -271,50 +271,48 @@ function downloadExcel() {
                 </tr>`;
             });
 
-            // 3. ÇOKLU ÇİZGİ GRAFİK MANTIĞI (Multi-Line Chart)
+            // 3. Multi-line chart logic
             
-            // Veriyi eskiden yeniye çevir (Grafik akışı için)
+            // Reverse the data to show it from oldest to newest
             const chartData = [...data].reverse();
             
-            // Verileri Ajanlara Göre Grupla
+            // Group data by agent
             // { 'Izmir': [10, 20, ...], 'Istanbul': [null, 15, ...] }
             const groupedData = {};
-            const labels = []; // Ortak zaman ekseni
+            const labels = []; // Shared time axis
 
             chartData.forEach(log => {
                 const timeLabel = new Date(log.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
                 
-                // Zaman etiketini ekle (Eğer yoksa)
-                // Not: Basitlik için her gelen veriyi bir zaman noktası kabul ediyoruz.
-                // Profesyonel sistemlerde "Time Series" ekseni kullanılır ama Chart.js'de bu biraz komplekstir.
-                // Burada basit bir yöntem kullanacağız:
+                // Add a time label. Each incoming record is treated as a time point for simplicity.
+                // A time series axis is more complex to configure in Chart.js, so this uses a simpler approach.
                 labels.push(timeLabel);
 
-                // Her ajan için veriyi hazırla
+                // Prepare the data for each agent
                 if (!groupedData[log.agent]) groupedData[log.agent] = [];
                 
-                // Bu zaman dilimi için bu ajanın verisini ekle
-                // (DİKKAT: Bu basit mantıkta zamanlar kayabilir ama görsel olarak iş görür)
+                // Add this agent's data for this time point.
+                // With this simple approach, timestamps may drift, but the chart remains readable.
                 groupedData[log.agent].push({x: timeLabel, y: parseInt(log.latency)});
             });
 
-            // Datasetleri Oluştur
+            // Create datasets
             const newDatasets = Object.keys(groupedData).map(agentName => {
                 const color = getColorForAgent(agentName);
                 return {
                     label: agentName,
-                    data: groupedData[agentName], // {x, y} formatı
+                    data: groupedData[agentName], // {x, y} format
                     borderColor: color,
-                    backgroundColor: color, // Legend kutusu için
+                    backgroundColor: color, // Used by the legend
                     borderWidth: 2,
                     tension: 0.3,
-                    pointRadius: 0, // Noktaları gizle, sadece hoverda göster
+                    pointRadius: 0, // Hide points until hovered
                     pointHoverRadius: 6,
-                    fill: false // Altını doldurma, çizgiler karışmasın
+                    fill: false // Keep lines clear by leaving the area unfilled
                 };
             });
 
-            // Grafiği Güncelle
+            // Update the chart
             mainChart.data.labels = labels;
             mainChart.data.datasets = newDatasets;
             mainChart.update();
@@ -326,7 +324,7 @@ function downloadExcel() {
                 const res = await fetch('/api/agents');
                 const agents = await res.json();
                 const select = document.getElementById('targetAgent');
-                if (agents.length === 0) { select.innerHTML = '<option value="">⚠️ Aktif Ajan Yok</option>'; return; }
+                if (agents.length === 0) { select.innerHTML = '<option value="">⚠️ No active agents</option>'; return; }
                 const current = select.value;
                 select.innerHTML = '';
                 agents.forEach(agent => {
@@ -353,11 +351,11 @@ function downloadExcel() {
         async function addTask() {
             const agent = document.getElementById('targetAgent').value;
             const url = document.getElementById('targetUrl').value.trim();
-            if(!agent || !url) return alert("Eksik bilgi!");
+            if(!agent || !url) return alert("Missing information!");
             await fetch('/api/targets', { method: 'POST', body: JSON.stringify({ agent_name: agent, target_url: url }) });
             document.getElementById('targetUrl').value = ''; loadTasks();
         }
-        async function deleteTask(id) { if(confirm('Sil?')) { await fetch(`/api/targets?id=${id}`, { method: 'DELETE' }); loadTasks(); } }
+        async function deleteTask(id) { if(confirm('Delete?')) { await fetch(`/api/targets?id=${id}`, { method: 'DELETE' }); loadTasks(); } }
         loadTasks();
 
         setMode('live');
