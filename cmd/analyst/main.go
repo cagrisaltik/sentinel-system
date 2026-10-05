@@ -1010,7 +1010,7 @@ func main() {
 	_ = godotenv.Load()
 	config, err := loadConfig()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Analyst configuration is invalid")
 	}
 	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -1021,7 +1021,7 @@ func main() {
 	}
 	database, err := openDatabase(os.Getenv("DATABASE_URL"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Analyst database connection failed")
 	}
 	if err := verifyDatabaseSchema(database); err != nil {
 		_ = database.Close()
@@ -1030,7 +1030,7 @@ func main() {
 	app, err := newAnalystApp(database, nil, config)
 	if err != nil {
 		_ = database.Close()
-		log.Fatal(err)
+		log.Fatal("Analyst application initialization failed")
 	}
 
 	server := &http.Server{
@@ -1059,7 +1059,7 @@ func main() {
 	go func() {
 		serveErrors <- server.ServeTLS(listener, "", "")
 	}()
-	log.Printf("Analyst HTTPS server started on port %s", config.Port)
+	log.Print("Analyst HTTPS server started")
 
 	select {
 	case <-ctx.Done():

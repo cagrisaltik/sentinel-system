@@ -14,7 +14,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -365,7 +364,6 @@ func loadConfig() error {
 	cfg.AllowedOrigins = make(map[string]bool)
 
 	origins := os.Getenv("ALLOWED_ORIGINS")
-	log.Println("🔥 RAW ALLOWED_ORIGINS =", origins)
 	if origins == "" {
 		cfg.AllowedOrigins["https://commander.sentinel.test:8080"] = true
 
@@ -385,20 +383,6 @@ func loadConfig() error {
 			}
 		}
 	}
-	log.Println("========== ALLOWED ORIGINS ==========")
-
-	for origin := range cfg.AllowedOrigins {
-		log.Println("CONFIG:", origin)
-	}
-
-	log.Println("=====================================")
-
-	log.Println("🔥 FINAL ALLOWED ORIGINS:")
-
-	for origin := range cfg.AllowedOrigins {
-		log.Println("   ->", origin)
-	}
-
 	return nil
 }
 
@@ -459,10 +443,7 @@ func initDB() {
 	db, err = sql.Open("mysql", connStr)
 
 	if err != nil {
-		log.Fatal(
-			"Could not configure the MySQL connection:",
-			err,
-		)
+		log.Fatal("Could not configure the MySQL connection")
 	}
 
 	db.SetMaxOpenConns(20)
@@ -471,16 +452,11 @@ func initDB() {
 	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err = db.Ping(); err != nil {
-		log.Fatal(
-			"MySQL connection failed:",
-			err,
-		)
+		log.Fatal("MySQL connection failed")
 	}
 
 	ensureDatabaseSchema()
 
-	fmt.Println("🗄️ MySQL: Connection established.")
-	fmt.Println("🐘 Commander: Database is ready.")
 }
 
 func loadTLSCertificate(certFile, keyFile, keyPassword string) (tls.Certificate, error) {
@@ -656,10 +632,7 @@ func ensureDatabaseSchema() {
 
 	for _, query := range queries {
 		if _, err := db.Exec(query); err != nil {
-			log.Fatal(
-				"MySQL schema creation/verification failed:",
-				err,
-			)
+			log.Fatal("MySQL schema creation or verification failed")
 		}
 	}
 
@@ -670,10 +643,7 @@ func ensureDatabaseSchema() {
 	).Scan(&userCount)
 
 	if err != nil {
-		log.Fatal(
-			"Could not read user records:",
-			err,
-		)
+		log.Fatal("Could not read user records")
 	}
 
 	if userCount == 0 {
@@ -703,10 +673,7 @@ func createInitialAdmin() {
 	)
 
 	if err != nil {
-		log.Fatal(
-			"Could not hash the admin password:",
-			err,
-		)
+		log.Fatal("Could not hash the admin password")
 	}
 
 	_, err = db.Exec(
@@ -721,16 +688,8 @@ func createInitialAdmin() {
 	)
 
 	if err != nil {
-		log.Fatal(
-			"Could not create the admin user:",
-			err,
-		)
+		log.Fatal("Could not create the admin user")
 	}
-
-	fmt.Println(
-		"🔑 Initial user created:",
-		defaultUser,
-	)
 }
 
 // -----------------------------------------------------------------------------
@@ -1264,10 +1223,7 @@ func startTaskScheduler() {
 			)
 
 			if err != nil {
-				log.Println(
-					"Scheduler DB error:",
-					err,
-				)
+				log.Println("Scheduler database query failed")
 
 				continue
 			}
@@ -1320,11 +1276,7 @@ func startTaskScheduler() {
 					tasksMu.Lock()
 					delete(pendingTasks, taskID)
 					tasksMu.Unlock()
-					log.Printf(
-						"Agent %s write error: %v",
-						agentName,
-						err,
-					)
+					log.Println("Agent task write failed")
 				}
 			}
 
@@ -1472,10 +1424,7 @@ func handleTargets(
 		)
 
 		if err != nil {
-			log.Println(
-				"DB Error:",
-				err,
-			)
+			log.Println("Target database insert failed")
 
 			http.Error(
 				w,
@@ -2070,10 +2019,7 @@ func handleExport(
 	)
 
 	if err := f.Write(w); err != nil {
-		log.Println(
-			"Excel response error:",
-			err,
-		)
+		log.Println("Excel response write failed")
 	}
 }
 
@@ -2086,22 +2032,11 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 4096,
 
 	CheckOrigin: func(r *http.Request) bool {
-
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 
-		log.Println("🔎 Received Origin:", origin)
-
-		for allowed := range cfg.AllowedOrigins {
-			log.Println("🔎 Allowed Origin:", allowed)
-		}
-
 		if cfg.AllowedOrigins[origin] {
-			log.Println("✅ Origin accepted:", origin)
 			return true
 		}
-
-		log.Println("⚠️ Blocked WebSocket Origin:", origin)
-
 		return false
 	},
 }
@@ -2208,12 +2143,8 @@ func authenticatedAgentConnection(
 	}, fingerprint, ""
 }
 
-func logAgentIdentityRejection(rejection agentIdentityRejection, agentName, fingerprint string) {
-	if fingerprint == "" {
-		log.Printf("agent registration rejected: %s agent=%q", rejection, agentName)
-		return
-	}
-	log.Printf("agent registration rejected: %s agent=%q fingerprint=%s", rejection, agentName, fingerprint)
+func logAgentIdentityRejection() {
+	log.Println("Agent registration rejected")
 }
 
 func closeAgentAuthorizationFailure(conn *websocket.Conn) {
@@ -2373,7 +2304,7 @@ func handleConnections(
 		return
 	}
 	if _, rejection := verifiedPeerCertificate(r.TLS); rejection != "" {
-		log.Printf("agent connection rejected: %s remote_addr=%s", rejection, r.RemoteAddr)
+		log.Println("Agent connection rejected: peer certificate is not verified")
 		http.Error(w, "Agent authorization failed", http.StatusUnauthorized)
 		return
 	}
@@ -2386,11 +2317,6 @@ func handleConnections(
 		)
 
 	if err != nil {
-		log.Println(
-			"WebSocket upgrade error:",
-			err,
-		)
-
 		return
 	}
 
@@ -2491,18 +2417,6 @@ messageLoop:
 
 		if err != nil {
 
-			if !errors.Is(
-				err,
-				io.EOF,
-			) {
-
-				log.Printf(
-					"WebSocket closed (%s): %v",
-					currentAgentName,
-					err,
-				)
-			}
-
 			break
 		}
 
@@ -2520,14 +2434,14 @@ messageLoop:
 					msg.Agent,
 				)
 
-			registeredAgentConn, fingerprint, rejection := authenticatedAgentConnection(
+			registeredAgentConn, _, rejection := authenticatedAgentConnection(
 				r.TLS,
 				agentName,
 				ws,
 				cfg.AgentIdentityBindings,
 			)
 			if rejection != "" {
-				logAgentIdentityRejection(rejection, agentName, fingerprint)
+				logAgentIdentityRejection()
 				closeAgentAuthorizationFailure(ws)
 				break
 			}
@@ -2536,12 +2450,12 @@ messageLoop:
 				cfg.AgentIdentityBindings,
 			)
 			if rejection != "" {
-				logAgentIdentityRejection(rejection, agentName, fingerprint)
+				logAgentIdentityRejection()
 				closeAgentAuthorizationFailure(ws)
 				break
 			}
 			if replacedConnection != nil && replacedConnection.Conn != ws {
-				log.Printf("agent reconnect replaced previous connection agent=%q fingerprint=%s", agentName, fingerprint)
+				log.Println("Agent reconnect replaced a previous connection")
 				closeReplacedAgentConnection(replacedConnection)
 			}
 
@@ -2551,11 +2465,6 @@ messageLoop:
 
 			currentAgentName =
 				agentName
-
-			log.Printf(
-				"🔵 Agent connected: %s",
-				currentAgentName,
-			)
 
 			continue
 		}
@@ -2567,14 +2476,12 @@ messageLoop:
 		if currentAgentName == "" ||
 			agentConn == nil {
 
-			log.Println(
-				"⛔ Message received before REGISTER",
-			)
+			log.Println("Agent protocol violation: message received before registration")
 
 			break
 		}
 		if !currentAuthorizedAgentConnection(currentAgentName, agentConn, cfg.AgentIdentityBindings) {
-			log.Printf("agent connection rejected: identity is no longer active agent=%q fingerprint=%s", currentAgentName, agentConn.CertificateFingerprint)
+			log.Println("Agent connection rejected: identity is no longer active")
 			break messageLoop
 		}
 
@@ -2592,7 +2499,7 @@ messageLoop:
 		// ---------------------------------------------------------------------
 
 		if !validAgentMessageType(msg.Type) {
-			log.Printf("Unknown agent message type %q; closing connection", msg.Type)
+			log.Println("Agent protocol violation: unknown message type")
 			break messageLoop
 		}
 
@@ -2602,9 +2509,7 @@ messageLoop:
 			if len(msg.Target) > 2048 ||
 				len(msg.Time) > maxReportTimeLength {
 
-				log.Println(
-					"⛔ REPORT message is too large",
-				)
+				log.Println("Agent protocol violation: report message is too large")
 
 				continue
 			}
@@ -2613,24 +2518,21 @@ messageLoop:
 
 			if target != msg.Target || !validTarget(target) {
 
-				log.Println(
-					"⛔ Invalid REPORT target:",
-					target,
-				)
+				log.Println("Agent report rejected: invalid target")
 
 				continue
 			}
 			if !validAgentReportIdentity(msg, agentConn, cfg.AgentIdentityBindings) {
-				log.Printf("Invalid REPORT agent or telemetry: agent=%s status=%d", currentAgentName, msg.Status)
+				log.Println("Agent report rejected: invalid identity or telemetry")
 				continue
 			}
 
 			if !validTaskID(msg.TaskID) {
-				log.Printf("Invalid REPORT task_id: %q", msg.TaskID)
+				log.Println("Agent report rejected: invalid task identifier")
 				continue
 			}
 			if !claimReport(msg.TaskID, currentAgentName, agentConn.CertificateFingerprint, target, time.Now()) {
-				log.Printf("REPORT task authorization failed: agent=%s task_id=%s", currentAgentName, msg.TaskID)
+				log.Println("Agent report rejected: task authorization failed")
 				continue
 			}
 
@@ -2661,10 +2563,7 @@ messageLoop:
 
 			if err != nil {
 				finishReport(msg.TaskID, false)
-				log.Println(
-					"Log DB Error:",
-					err,
-				)
+				log.Println("Agent report database insert failed")
 			} else {
 				finishReport(msg.TaskID, true)
 			}
@@ -2694,10 +2593,6 @@ messageLoop:
 
 		clientsMu.Unlock()
 
-		log.Printf(
-			"🔴 Agent disconnected: %s",
-			currentAgentName,
-		)
 	}
 }
 
@@ -2912,7 +2807,7 @@ func buildHTTPServer() *http.Server {
 			":" +
 			cfg.Port,
 
-		Handler: requestLogger(mux),
+		Handler: mux,
 
 		ReadHeaderTimeout: 10 * time.Second,
 
@@ -2922,38 +2817,6 @@ func buildHTTPServer() *http.Server {
 
 		MaxHeaderBytes: 32 * 1024,
 	}
-}
-
-// -----------------------------------------------------------------------------
-// HTTP logging
-// -----------------------------------------------------------------------------
-
-func requestLogger(
-	next http.Handler,
-) http.Handler {
-
-	return http.HandlerFunc(
-		func(
-			w http.ResponseWriter,
-			r *http.Request,
-		) {
-
-			start :=
-				time.Now()
-
-			next.ServeHTTP(
-				w,
-				r,
-			)
-
-			log.Printf(
-				"%s %s %s",
-				r.Method,
-				r.URL.Path,
-				time.Since(start),
-			)
-		},
-	)
 }
 
 // -----------------------------------------------------------------------------
@@ -2975,9 +2838,7 @@ func shutdownOnSignal(
 
 	<-stop
 
-	log.Println(
-		"🛑 Commander is shutting down...",
-	)
+	log.Println("Commander is shutting down")
 
 	ctx, cancel :=
 		context.WithTimeout(
@@ -2993,9 +2854,7 @@ func shutdownOnSignal(
 		_ = db.Close()
 	}
 
-	log.Println(
-		"Commander has shut down.",
-	)
+	log.Println("Commander has shut down")
 }
 
 // -----------------------------------------------------------------------------
@@ -3003,24 +2862,17 @@ func shutdownOnSignal(
 // -----------------------------------------------------------------------------
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println(".env not found; using environment variables.")
-	}
+	_ = godotenv.Load()
 
 	if err := requireMTLSSetting(os.Getenv("MTLS_REQUIRED")); err != nil {
-		log.Fatal(err)
+		log.Fatal("Commander requires mTLS")
 	}
 	if err := loadConfig(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Commander configuration is invalid")
 	}
 	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" || cfg.ClientCAFile == "" {
 		log.Fatal("Commander mTLS requires COMMANDER_TLS_CERT, COMMANDER_TLS_KEY, and COMMANDER_CLIENT_CA")
 	}
-
-	fmt.Println("======================================")
-	fmt.Println(" SENTINEL COMMANDER")
-	fmt.Println(" Security Hardened Build")
-	fmt.Println("======================================")
 
 	initDB()
 	sessionCleanup()
@@ -3031,21 +2883,15 @@ func main() {
 
 	tlsConfig, err := buildTLSConfig()
 	if err != nil {
-		log.Fatal("TLS configuration error:", err)
+		log.Fatal("TLS configuration failed")
 	}
 	server.TLSConfig = tlsConfig
 
-	fmt.Println("🔐 TLS: ACTIVE")
-	fmt.Println("🔒 Minimum TLS: 1.3")
-	fmt.Println("🛡️ mTLS: ACTIVE")
-	fmt.Println("🗄️ Database: MySQL")
-	fmt.Println("🌐 Commander:", "https://"+cfg.Host+":"+cfg.Port)
-
 	ln, err := tls.Listen("tcp", cfg.Host+":"+cfg.Port, tlsConfig)
 	if err != nil {
-		log.Fatal("Could not create TLS listener:", err)
+		log.Fatal("Could not create TLS listener")
 	}
 	if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal("HTTPS server error:", err)
+		log.Fatal("HTTPS server failed unexpectedly")
 	}
 }

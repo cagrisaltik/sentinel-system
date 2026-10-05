@@ -327,7 +327,7 @@ func main() {
 	_ = godotenv.Load()
 	config, err := loadScoutConfig()
 	if err != nil {
-		log.Fatal("Scout security configuration is invalid:", err)
+		log.Fatal("Scout security configuration is invalid")
 	}
 	serverURL := config.commanderURL
 	caFile := config.caFile
@@ -342,13 +342,13 @@ func main() {
 
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
-		log.Fatal("Could not read CA certificate:", err)
+		log.Fatal("Could not read CA certificate")
 	}
 
 	rootCAs := x509.NewCertPool()
 
 	if !rootCAs.AppendCertsFromPEM(caPEM) {
-		log.Fatal("Could not load CA certificate:", caFile)
+		log.Fatal("Could not load CA certificate")
 	}
 
 	// ============================================================
@@ -362,10 +362,8 @@ func main() {
 	)
 
 	if err != nil {
-		log.Fatal("Could not load mTLS client certificate:", err)
+		log.Fatal("Could not load mTLS client certificate")
 	}
-
-	log.Printf("🔐 mTLS client certificate is ready: %s", agentName)
 
 	// ============================================================
 	// TLS CONFIGURATION
@@ -398,12 +396,6 @@ func main() {
 
 	u := strings.TrimRight(serverURL, "/") + "/ws"
 
-	fmt.Printf(
-		"Connecting to %s (Agent: %s)\n",
-		u,
-		agentName,
-	)
-
 	// ============================================================
 	// RECONNECT LOOP
 	// ============================================================
@@ -435,23 +427,18 @@ func main() {
 		c, _, err := dialer.Dial(u, headers)
 
 		if err != nil {
-			log.Println(
-				"Connection failed; retrying in 5 seconds:",
-				err,
-			)
+			log.Println("Commander connection failed; retrying in 5 seconds")
 
 			time.Sleep(5 * time.Second)
 			continue
 		}
-
-		fmt.Println("✅ Connected to Commander.")
 
 		// --------------------------------------------------------
 		// REGISTER
 		// --------------------------------------------------------
 
 		if err := configureScoutWebSocket(c, wsReadWait); err != nil {
-			log.Println("Could not set WebSocket read deadline:", err)
+			log.Println("Could not configure WebSocket read deadline")
 			c.Close()
 			time.Sleep(2 * time.Second)
 			continue
@@ -463,14 +450,12 @@ func main() {
 		})
 
 		if err != nil {
-			log.Println("Could not send REGISTER:", err)
+			log.Println("Could not send agent registration")
 			c.Close()
 
 			time.Sleep(2 * time.Second)
 			continue
 		}
-
-		fmt.Println("🛰️ Scout sent registration:", agentName)
 
 		// --------------------------------------------------------
 		// COMMAND LOOP
@@ -485,16 +470,13 @@ func main() {
 				err := c.ReadJSON(&msg)
 
 				if err != nil {
-					log.Println(
-						"Connection lost:",
-						err,
-					)
+					log.Println("Commander connection closed")
 
 					return
 				}
 
 				if msg.Type != "PING_REQUEST" {
-					log.Printf("Rejected unknown Commander message type: %q", msg.Type)
+					log.Println("Rejected unknown Commander message type")
 					return
 				}
 
@@ -504,14 +486,9 @@ func main() {
 
 				if msg.Type == "PING_REQUEST" {
 					if !authorizePing(msg, agentName, time.Now()) {
-						log.Printf("Rejected invalid, expired, or duplicate task: %s", msg.TaskID)
+						log.Println("Rejected invalid, expired, or duplicate task")
 						continue
 					}
-
-					fmt.Printf(
-						"🎯 Task: %s\n",
-						msg.Target,
-					)
 
 					// Security:
 					// To reduce command injection risk,
@@ -576,10 +553,7 @@ func main() {
 					}
 
 					if err := writeScoutJSON(c, resp); err != nil {
-						log.Println(
-							"Could not send report:",
-							err,
-						)
+						log.Println("Could not send task report")
 
 						return
 					}
