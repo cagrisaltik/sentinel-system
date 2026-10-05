@@ -272,14 +272,14 @@ Runtime testing has covered:
   - Reverse proxy architecture
   - Internal service isolation
 
-- [ ] **Phase 3 — Agent Identity Hardening**
+- [x] **Phase 3 — Agent Identity Hardening**
   - Certificate-bound agent identity
   - Certificate fingerprint validation
   - Agent name collision protection
   - Secure agent enrollment
   - Agent revocation
 
-- [ ] **Phase 4 — Analyst Security**
+- [x] **Phase 4 — Analyst Security**
   - Harden Analyst endpoints
   - Authentication improvements
   - CSP hardening
@@ -678,6 +678,20 @@ PKI Lifecycle   ██░░░░░░░░  Planned
 PQC Readiness   █░░░░░░░░░  Long-term
 Production      ██░░░░░░░░  Not Ready
 ```
+---
+
+### Security Roadmap Status
+
+- **Phase 1 — Agent Gateway Hardening:** ✅ Complete
+- **Phase 2 — Network Architecture Hardening:** 🔄 In Progress / Planned
+- **Phase 3 — Agent Identity Hardening:** ✅ Complete
+- **Phase 4 — Analyst Security Hardening:** ✅ Complete
+- **Phase 5 — Authorization & RBAC:** ⏭️ Next
+- **Phase 6 — API & Resource Protection:** Planned
+- **Phase 7 — Audit Logging:** Planned
+- **Phase 8 — PKI & Certificate Lifecycle:** Planned
+- **Phase 9 — Cryptographic Agility & PQC Readiness:** Long-term
+- **Phase 10 — Production Hardening:** Planned
 
 ---
 
