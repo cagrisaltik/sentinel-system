@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -22,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -41,10 +43,12 @@ type Config struct {
 	SessionTTL               time.Duration
 	LoginMaxAttempts         int
 	LoginIdentityMaxAttempts int
+	LoginAccountMaxAttempts  int
 	LoginWindow              time.Duration
 	LoginBlockTime           time.Duration
 	APIMaxRequests           int
 	APIWindow                time.Duration
+	TrustedProxyCIDRs        []*net.IPNet
 }
 
 func loadConfig() (Config, error) {
@@ -75,6 +79,10 @@ func loadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	accountMax, err := positiveEnvInt("LOGIN_ACCOUNT_MAX_ATTEMPTS", 10, 1, 1000)
+	if err != nil {
+		return Config{}, err
+	}
 	loginWindowMinutes, err := positiveEnvInt("LOGIN_WINDOW_MINUTES", 10, 1, 1440)
 	if err != nil {
 		return Config{}, err
@@ -84,6 +92,10 @@ func loadConfig() (Config, error) {
 		return Config{}, err
 	}
 	apiLimit, err := positiveEnvInt("API_RATE_LIMIT_PER_MINUTE", 240, 1, 100000)
+	if err != nil {
+		return Config{}, err
+	}
+	trustedProxyCIDRs, err := parseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -100,11 +112,39 @@ func loadConfig() (Config, error) {
 		SessionTTL:               time.Duration(sessionHours) * time.Hour,
 		LoginMaxAttempts:         loginMax,
 		LoginIdentityMaxAttempts: identityMax,
+		LoginAccountMaxAttempts:  accountMax,
 		LoginWindow:              time.Duration(loginWindowMinutes) * time.Minute,
 		LoginBlockTime:           time.Duration(loginBlockMinutes) * time.Minute,
 		APIMaxRequests:           apiLimit,
 		APIWindow:                time.Minute,
+		TrustedProxyCIDRs:        trustedProxyCIDRs,
 	}, nil
+}
+
+func parseTrustedProxyCIDRs(value string) ([]*net.IPNet, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	networks := make([]*net.IPNet, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, errors.New("TRUSTED_PROXY_CIDRS contains an empty entry")
+		}
+		ip, network, err := net.ParseCIDR(entry)
+		if err != nil || !ip.Equal(network.IP) {
+			return nil, errors.New("TRUSTED_PROXY_CIDRS must contain canonical CIDRs")
+		}
+		if _, ok := seen[network.String()]; ok {
+			return nil, errors.New("TRUSTED_PROXY_CIDRS contains a duplicate CIDR")
+		}
+		seen[network.String()] = struct{}{}
+		networks = append(networks, network)
+	}
+	return networks, nil
 }
 
 func positiveEnvInt(name string, fallback, minimum, maximum int) (int, error) {
@@ -120,11 +160,11 @@ func positiveEnvInt(name string, fallback, minimum, maximum int) (int, error) {
 }
 
 func openDatabase(dsn string) (*sql.DB, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return nil, errors.New("DATABASE_URL is required")
+	configuredDSN, err := prepareMySQLDSN(dsn, os.Getenv("DATABASE_TLS_CA_FILE"))
+	if err != nil {
+		return nil, err
 	}
-	database, err := sql.Open("mysql", dsn)
+	database, err := sql.Open("mysql", configuredDSN)
 	if err != nil {
 		return nil, errors.New("MySQL connection could not be configured")
 	}
@@ -140,6 +180,56 @@ func openDatabase(dsn string) (*sql.DB, error) {
 		return nil, errors.New("MySQL is unavailable")
 	}
 	return database, nil
+}
+
+const analystDatabaseTLSConfigPrefix = "analyst-verified-db-"
+
+func prepareMySQLDSN(dsn, caFile string) (string, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return "", errors.New("DATABASE_URL is required")
+	}
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", errors.New("MySQL connection configuration is invalid")
+	}
+	if config.AllowFallbackToPlaintext {
+		return "", errors.New("MySQL plaintext fallback is not allowed")
+	}
+	if config.Net == "unix" {
+		if config.TLSConfig != "" && config.TLSConfig != "false" {
+			return "", errors.New("MySQL TLS configuration is invalid for a Unix socket")
+		}
+		return config.FormatDSN(), nil
+	}
+	if config.TLSConfig != "true" {
+		return "", errors.New("network MySQL requires verified TLS configuration")
+	}
+
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		if caFile == "" {
+			return "", errors.New("MySQL TLS trust roots are unavailable")
+		}
+		roots = x509.NewCertPool()
+	}
+	var caPEM []byte
+	if caFile != "" {
+		caPEM, err = os.ReadFile(caFile)
+		if err != nil || !roots.AppendCertsFromPEM(caPEM) {
+			return "", errors.New("MySQL TLS CA configuration is invalid")
+		}
+	}
+
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	caFingerprint := sha256.Sum256(caPEM)
+	tlsConfigName := analystDatabaseTLSConfigPrefix + fmt.Sprintf("%x", caFingerprint[:8])
+	if err := mysql.RegisterTLSConfig(tlsConfigName, tlsConfig); err != nil {
+		return "", errors.New("MySQL TLS configuration could not be registered")
+	}
+	config.TLS = nil
+	config.TLSConfig = tlsConfigName
+	return config.FormatDSN(), nil
 }
 
 func verifyDatabaseSchema(database *sql.DB) error {
@@ -256,13 +346,18 @@ type loginRateLimiter struct {
 	entries       map[string]*loginAttempt
 	limit         int
 	identityLimit int
+	accountLimit  int
+	maxEntries    int
 	window        time.Duration
 	cooldown      time.Duration
 }
 
-func newLoginRateLimiter(limit, identityLimit int, window, cooldown time.Duration) *loginRateLimiter {
+const maxLoginRateLimitEntries = 20000
+
+func newLoginRateLimiter(limit, identityLimit, accountLimit int, window, cooldown time.Duration) *loginRateLimiter {
 	return &loginRateLimiter{
-		entries: make(map[string]*loginAttempt), limit: limit, identityLimit: identityLimit, window: window, cooldown: cooldown,
+		entries: make(map[string]*loginAttempt), limit: limit, identityLimit: identityLimit,
+		accountLimit: accountLimit, maxEntries: maxLoginRateLimitEntries, window: window, cooldown: cooldown,
 	}
 }
 
@@ -270,9 +365,11 @@ func (l *loginRateLimiter) blocked(keys []string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	blocked := false
+	missing := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		entry, ok := l.entries[key]
 		if !ok {
+			missing[key] = struct{}{}
 			continue
 		}
 		entry.lastSeen = now
@@ -286,12 +383,24 @@ func (l *loginRateLimiter) blocked(keys []string, now time.Time) bool {
 			entry.blockedTill = time.Time{}
 		}
 	}
+	if !l.makeRoomLocked(len(missing), keys, now) {
+		blocked = true
+	}
 	return blocked
 }
 
 func (l *loginRateLimiter) failure(keys []string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	missing := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, ok := l.entries[key]; !ok {
+			missing[key] = struct{}{}
+		}
+	}
+	if !l.makeRoomLocked(len(missing), keys, now) {
+		return
+	}
 	for _, key := range keys {
 		entry, ok := l.entries[key]
 		if !ok {
@@ -308,11 +417,41 @@ func (l *loginRateLimiter) failure(keys []string, now time.Time) {
 		limit := l.limit
 		if strings.HasPrefix(key, "identity:") {
 			limit = l.identityLimit
+		} else if strings.HasPrefix(key, "account:") {
+			limit = l.accountLimit
 		}
 		if entry.count >= limit {
 			entry.blockedTill = now.Add(l.cooldown)
 		}
 	}
+}
+
+func (l *loginRateLimiter) makeRoomLocked(required int, preserve []string, now time.Time) bool {
+	if required > l.maxEntries {
+		return false
+	}
+	preserved := make(map[string]struct{}, len(preserve))
+	for _, key := range preserve {
+		preserved[key] = struct{}{}
+	}
+	for len(l.entries)+required > l.maxEntries {
+		oldestKey := ""
+		var oldestSeen time.Time
+		for key, entry := range l.entries {
+			if _, keep := preserved[key]; keep || now.Before(entry.blockedTill) {
+				continue
+			}
+			if oldestKey == "" || entry.lastSeen.Before(oldestSeen) {
+				oldestKey = key
+				oldestSeen = entry.lastSeen
+			}
+		}
+		if oldestKey == "" {
+			return false
+		}
+		delete(l.entries, oldestKey)
+	}
+	return true
 }
 
 func (l *loginRateLimiter) cleanup(now time.Time) {
@@ -417,7 +556,7 @@ func newAnalystApp(db *sql.DB, credentials credentialStore, config Config) (*Ana
 		db:                db,
 		credentials:       credentials,
 		sessions:          newSessionStore(config.SessionTTL),
-		loginLimiter:      newLoginRateLimiter(config.LoginMaxAttempts, config.LoginIdentityMaxAttempts, config.LoginWindow, config.LoginBlockTime),
+		loginLimiter:      newLoginRateLimiter(config.LoginMaxAttempts, config.LoginIdentityMaxAttempts, config.LoginAccountMaxAttempts, config.LoginWindow, config.LoginBlockTime),
 		apiLimiter:        newRequestRateLimiter(config.APIMaxRequests, config.APIWindow),
 		dummyPasswordHash: dummyHash,
 		config:            config,
@@ -466,7 +605,7 @@ func (a *AnalystApp) Handler() http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; script-src-attr 'none'; style-src 'self' https://fonts.googleapis.com https://unpkg.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -511,20 +650,66 @@ func (a *AnalystApp) unauthorized(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+func (a *AnalystApp) clientIP(r *http.Request) string {
+	peer := remotePeerIP(r.RemoteAddr)
+	if peer == nil {
+		if r.RemoteAddr == "" {
+			return "unknown"
+		}
+		return r.RemoteAddr
+	}
+	if !ipInNetworks(peer, a.config.TrustedProxyCIDRs) {
+		return peer.String()
+	}
+
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if len(forwarded) == 0 {
+		return peer.String()
+	}
+	var chain []net.IP
+	for _, header := range forwarded {
+		for _, value := range strings.Split(header, ",") {
+			ip := net.ParseIP(strings.TrimSpace(value))
+			if ip == nil {
+				return peer.String()
+			}
+			chain = append(chain, ip)
+		}
+	}
+	if len(chain) == 0 {
+		return peer.String()
+	}
+
+	client := peer
+	for index := len(chain) - 1; index >= 0; index-- {
+		if !ipInNetworks(client, a.config.TrustedProxyCIDRs) {
+			break
+		}
+		client = chain[index]
+	}
+	return client.String()
+}
+
+func remotePeerIP(remoteAddr string) net.IP {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err == nil {
-		return host
+		return net.ParseIP(host)
 	}
-	if r.RemoteAddr == "" {
-		return "unknown"
+	return net.ParseIP(strings.Trim(remoteAddr, "[]"))
+}
+
+func ipInNetworks(ip net.IP, networks []*net.IPNet) bool {
+	for _, network := range networks {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
 	}
-	return r.RemoteAddr
+	return false
 }
 
 func (a *AnalystApp) loginRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := a.clientIP(r)
 		if a.loginLimiter.blocked([]string{"ip:" + ip}, time.Now()) {
 			log.Print("security event: login rate limit")
 			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
@@ -536,7 +721,7 @@ func (a *AnalystApp) loginRateLimit(next http.Handler) http.Handler {
 
 func (a *AnalystApp) apiRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.apiLimiter.allow(clientIP(r), time.Now()) {
+		if !a.apiLimiter.allow(a.clientIP(r), time.Now()) {
 			log.Print("security event: API rate limit")
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
@@ -570,20 +755,29 @@ func (a *AnalystApp) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	var creds LoginRequest
 	if err := decodeJSONBody(w, r, maxLoginBodyBytes, &creds); err != nil {
-		a.loginLimiter.failure([]string{"ip:" + clientIP(r)}, time.Now())
+		a.loginLimiter.failure([]string{"ip:" + a.clientIP(r)}, time.Now())
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 	creds.Username = strings.TrimSpace(creds.Username)
-	ip := clientIP(r)
-	keys := []string{"ip:" + ip, "identity:" + ip + "\x00" + strings.ToLower(creds.Username)}
+	ip := a.clientIP(r)
+	keys := []string{"ip:" + ip}
+	validUsername := creds.Username != "" && len(creds.Username) <= 100 && !hasControlCharacter(creds.Username)
+	if validUsername {
+		normalizedUsername := strings.ToLower(creds.Username)
+		keys = append(keys, "identity:"+ip+"\x00"+normalizedUsername, "account:"+normalizedUsername)
+	}
 	if a.loginLimiter.blocked(keys, time.Now()) {
 		log.Print("security event: login rate limit")
 		http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 		return
 	}
-	if creds.Username == "" || len(creds.Username) > 100 || len(creds.Password) == 0 || len(creds.Password) > 72 || hasControlCharacter(creds.Username) {
-		a.loginLimiter.failure(keys, time.Now())
+	if !validUsername || len(creds.Password) == 0 || len(creds.Password) > 72 {
+		failureKeys := keys
+		if validUsername {
+			failureKeys = keys[:len(keys)-1]
+		}
+		a.loginLimiter.failure(failureKeys, time.Now())
 		log.Print("security event: login failure")
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
