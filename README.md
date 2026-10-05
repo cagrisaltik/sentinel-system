@@ -664,7 +664,7 @@ affiliation, or official distribution.
 
 ---
 
-### Security Roadmap Status
+# ⭐ Security Roadmap Status
 
 - **Phase 1 — Agent Gateway Hardening:** ✅ Complete
 - **Phase 2 — Network Architecture Hardening:** 🔄 In Progress / Planned
